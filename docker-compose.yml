@@ -1,0 +1,111 @@
+version: '3.8'
+
+services:
+  # 1. Vector Search: Local ChromaDB instance
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: sentinai_chromadb
+    ports:
+      - "8001:8000"
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=False
+    volumes:
+      - ./chroma_db:/chroma/chroma
+    networks:
+      - sentinai_net
+
+  # 2. Monitoring: Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: sentinai_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - sentinai_net
+
+  # 3. Monitoring: Grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: sentinai_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    depends_on:
+      - prometheus
+    networks:
+      - sentinai_net
+
+  # 4. LLM Core (Local Ollama for Llama 3 8B)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: sentinai_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama_data:/root/.ollama
+    networks:
+      - sentinai_net
+
+networks:
+  sentinai_net:
+    driver: bridge
+
+  # 5. Core API Application
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sentinai_api
+    ports:
+      - "8000:8000"
+    environment:
+      - POSTGRES_SERVER=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=sentinai_dev
+      - POSTGRES_PORT=5432
+      - CHROMA_PERSIST_DIRECTORY=./chroma_db
+    depends_on:
+      - postgres
+      - chromadb
+    networks:
+      - sentinai_net
+
+  # 6. Database
+  postgres:
+    image: postgres:15
+    container_name: sentinai_postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=sentinai_dev
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - sentinai_net
+
+  # 7. S3 Compatible Storage
+  minio:
+    image: minio/minio:latest
+    container_name: sentinai_minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=your_access_key
+      - MINIO_ROOT_PASSWORD=your_secret_key
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - sentinai_net
+
+volumes:
+  pgdata:
+  minio_data:

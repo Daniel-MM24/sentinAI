@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: silver-pipeline
+  namespace: data-processing
+  labels:
+    app: sentinai
+    layer: silver
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sentinai
+      layer: silver
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: sentinai
+        layer: silver
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+    spec:
+      containers:
+      - name: silver-transformer
+        image: sentinai/silver-transformer:latest
+        imagePullPolicy: Always
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "2"
+          limits:
+            memory: "16Gi" # Configured for Polars memory overhead during high-volume joins
+            cpu: "4"
+        env:
+        - name: POLARS_MAX_THREADS
+          value: "4" # Align with cpu limit
+        - name: OPENLINEAGE_URL
+          valueFrom:
+            secretKeyRef:
+              name: openlineage-credentials
+              key: url
+        - name: EXPECTATION_SUITE_STRICT
+          value: "true"
+        volumeMounts:
+        - name: data-drift-storage
+          mountPath: /app/data
+      volumes:
+      - name: data-drift-storage
+        persistentVolumeClaim:
+          claimName: drift-db-pvc

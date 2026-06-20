@@ -1,0 +1,65 @@
+{
+  "run_id": "1497dc2e-84c1-4ef9-9790-73f2e59e5ba1",
+  "timestamp": "20260618T213303",
+  "parameters_used": {
+    "transaction_type_probs": {
+      "P2P": 0.6,
+      "C2B": 0.3,
+      "B2C": 0.1
+    },
+    "amount_mean": 5.0,
+    "amount_std": 1.0,
+    "velocity_lambda": 10.0,
+    "dataset_size": 10000,
+    "total_queries_per_year": 12,
+    "query_type": "standard",
+    "clipping_bound": 5000.0,
+    "seed": 42,
+    "model_version": "v1.0"
+  },
+  "fidelity_report": {
+    "ks_statistic": 0.9734167318217357,
+    "p_value": 0.0,
+    "is_aligned": false,
+    "model_version": "v1.0",
+    "fidelity_status": "FAIL"
+  },
+  "record_count": 5116,
+  "head": [
+    {
+      "transaction_id": "txn_0_1781818385",
+      "sender_id": "user_1169",
+      "transaction_amount": 1.0,
+      "timestamp": "2024-01-01T00:01:47",
+      "channel_type": "P2P"
+    },
+    {
+      "transaction_id": "txn_2_1781818385",
+      "sender_id": "user_1683",
+      "transaction_amount": 1.0,
+      "timestamp": "2024-01-01T00:18:30",
+      "channel_type": "P2P"
+    },
+    {
+      "transaction_id": "txn_3_1781818385",
+      "sender_id": "user_1089",
+      "transaction_amount": 1.0,
+      "timestamp": "2024-01-01T00:22:55",
+      "channel_type": "P2P"
+    },
+    {
+      "transaction_id": "txn_5_1781818385",
+      "sender_id": "user_388",
+      "transaction_amount": 1.0,
+      "timestamp": "2024-01-01T00:41:35",
+      "channel_type": "B2C"
+    },
+    {
+      "transaction_id": "txn_7_1781818385",
+      "sender_id": "user_1008",
+      "transaction_amount": 1.0,
+      "timestamp": "2024-01-01T00:58:21",
+      "channel_type": "P2P"
+    }
+  ]
+}
