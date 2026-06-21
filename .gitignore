@@ -36,9 +36,35 @@ chroma_db/
 vector_store/
 
 # Data & Logs
-data/
+/data/*.duckdb
+/data/*.db
+/data/*.parquet
+/data/*.json
+/data/*.yaml
+/data/bronze/**/*.parquet
+/data/bronze/**/*.json
+/data/bronze/**/*.yaml
+/data/silver/**/*.parquet
+/data/silver/**/*.json
+/data/silver/**/*.yaml
+/data/gold/**/*.parquet
+/data/gold/**/*.json
+/data/gold/**/*.yaml
+/data/quarantine/**/*.parquet
+/data/quarantine/**/*.json
+/data/quarantine/**/*.yaml
+*.duckdb
+*.db
 logs/
 *.log
+
+# Artifacts (pipeline run outputs)
+artifacts/*.json
+artifacts/*.md
+
+# Temporary test files in root directory
+test_*.py
+clear_data_test.py
 
 # Pytest / Coverage
 .pytest_cache/

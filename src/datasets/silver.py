@@ -18,8 +18,9 @@ Entity Resolution Logic Version: v1.0.0
 
 import logging
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timezone
+from pathlib import Path
 
 import polars as pl
 import great_expectations as gx
@@ -30,6 +31,7 @@ from rapidfuzz import fuzz, distance
 import duckdb
 
 from src.datasets.schemas import SilverRecordSchema
+from src.data.lineage_decorator import lineage_trace, emit_transformation_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +129,12 @@ class SilverLayer:
         )
         return suite
 
+    @lineage_trace(
+        job_name="bronze_to_silver_transform",
+        input_datasets=["bronze_dataset"],
+        output_datasets=["silver_dataset"],
+        namespace="sentinai.datasets",
+    )
     def transform_to_silver(
         self,
         bronze_data: pl.DataFrame,
@@ -145,7 +153,7 @@ class SilverLayer:
             2. Entity Resolution (Golden Record generation via Jaro-Winkler)
             3. Quality Validation (Great Expectations circuit breaker)
             4. Data Drift reporting (DuckDB persistence)
-            5. OpenLineage metadata emission
+            5. OpenLineage metadata emission (via lineage_trace decorator)
 
         Args:
             bronze_data: Raw dataframe from the Bronze layer.
@@ -160,12 +168,7 @@ class SilverLayer:
             CircuitBreakerError: If data quality metrics exceed thresholds.
         """
         run_id = str(uuid.uuid4())
-        self._emit_lineage(
-            run_id,
-            RunState.START,
-            inputs=[self._create_ol_dataset("bronze_dataset")],
-        )
-
+        
         try:
             logger.info(
                 "Starting Silver Layer Transformation... "
@@ -178,19 +181,34 @@ class SilverLayer:
             # Step 2: Entity Resolution
             resolved_df = self._resolve_entities(cleaned_df)
 
-            # Step 3: Quality Validation (Circuit Breaker)
-            self._validate_quality(resolved_df)
+            # Step 3: Quality Validation (Circuit Breaker with Quarantine Pattern)
+            compliant_df, non_compliant_df, validation_metadata = self._validate_quality(
+                resolved_df
+            )
+
+            # Step 3.5: Quarantine non-compliant rows if any
+            if non_compliant_df.height > 0:
+                self._quarantine_non_compliant_rows(
+                    non_compliant_df, validation_metadata, partition_key
+                )
+
+            # Use compliant data for downstream processing
+            resolved_df = compliant_df
 
             # Step 4: Data Drift Report for MRM compliance
             self._generate_data_drift_report(
                 bronze_data, resolved_df, partition_key=partition_key
             )
 
-            self._emit_lineage(
-                run_id,
-                RunState.COMPLETE,
-                outputs=[self._create_ol_dataset("silver_dataset")],
+            # Emit transformation metadata for auditability
+            emit_transformation_metadata(
+                job_name="bronze_to_silver_transform",
+                run_id=run_id,
+                transformation_python="silver_transform",
+                input_rows=bronze_data.height,
+                output_rows=resolved_df.height,
             )
+
             logger.info(
                 f"Silver Layer Transformation complete. "
                 f"Rows: {bronze_data.height} → {resolved_df.height}"
@@ -198,10 +216,9 @@ class SilverLayer:
             return resolved_df
 
         except CircuitBreakerError:
-            self._emit_lineage(run_id, RunState.FAIL)
+            logger.error(f"Circuit breaker triggered for run_id={run_id}")
             raise
         except Exception as e:
-            self._emit_lineage(run_id, RunState.FAIL)
             logger.error(f"Transformation failed: {e!s}")
             raise
 
@@ -305,19 +322,25 @@ class SilverLayer:
 
         return resolved_df
 
-    def _validate_quality(self, df: pl.DataFrame) -> None:
+    def _validate_quality(
+        self, df: pl.DataFrame
+    ) -> Tuple[pl.DataFrame, pl.DataFrame, Dict[str, Any]]:
         """
-        Circuit Breaker using Great Expectations (V3 Datasource API).
+        Circuit Breaker using Great Expectations (V3 Datasource API) with Quarantine Pattern.
 
         Converts the Polars dataframe to Pandas and runs the configured
-        ExpectationSuite. If any expectation fails, the pipeline is halted
-        by raising a CircuitBreakerError.
+        ExpectationSuite. Instead of failing on any expectation failure,
+        this method separates compliant from non-compliant rows using
+        the validation results.
 
         Args:
             df: The resolved Silver dataframe to validate.
 
-        Raises:
-            CircuitBreakerError: If validation results indicate failure.
+        Returns:
+            Tuple of (compliant_df, non_compliant_df, validation_metadata)
+            - compliant_df: Rows that passed all expectations
+            - non_compliant_df: Rows that failed at least one expectation
+            - validation_metadata: Dict with validation details for audit trail
         """
         context = gx.get_context()
 
@@ -350,15 +373,84 @@ class SilverLayer:
 
         validation_result = checkpoint.run()
 
-        if not validation_result.success:
-            logger.error(
-                "Data Quality Validation Failed. Triggering Circuit Breaker."
-            )
-            raise CircuitBreakerError(
-                f"Quality gate failed for suite "
-                f"'{self.expectation_suite.expectation_suite_name}'. "
-                f"Check Great Expectations validation results for details."
-            )
+        # Extract validation metadata for audit trail
+        validation_metadata = {
+            "validation_success": validation_result.success,
+            "run_id": validation_result.run_id,
+            "run_time": None,  # run_info.run_time not available in GX v0.18.x
+            "expectation_suite_name": self.expectation_suite.expectation_suite_name,
+            "statistics": validation_result.get_statistics(),
+        }
+
+        if validation_result.success:
+            logger.info("Data Quality Validation Passed.")
+            return df, pl.DataFrame(schema=df.schema), validation_metadata
+
+        # Quarantine Pattern: Identify non-compliant rows
+        logger.warning(
+            f"Data Quality Validation Failed. Implementing Quarantine Pattern. "
+            f"Failed expectations: {len(validation_result.run_results)}"
+        )
+
+        # Analyze which rows failed which expectations
+        non_compliant_indices = set()
+        expectation_failures = []
+
+        # Use list_validation_results to get actual ExpectationSuiteValidationResult objects
+        validation_results = validation_result.list_validation_results()
+        for run_result in validation_results:
+            if not run_result.success:
+                for expectation_result in run_result.results:
+                    if not expectation_result.success:
+                        expectation_failures.append({
+                            "expectation_type": expectation_result.expectation_config.expectation_type,
+                            "kwargs": expectation_result.expectation_config.kwargs,
+                            "result": expectation_result.result,
+                        })
+                        # Collect indices of unexpected values if available
+                        if hasattr(expectation_result.result, "unexpected_index_list"):
+                            non_compliant_indices.update(expectation_result.result.unexpected_index_list)
+
+        validation_metadata["expectation_failures"] = expectation_failures
+
+        # Separate compliant and non-compliant rows using expectation-based filtering
+        # Check each failed expectation and build filter conditions
+        non_compliant_filter = pl.lit(False)
+        
+        for failure in expectation_failures:
+            expectation_type = failure.get("expectation_type")
+            kwargs = failure.get("kwargs", {})
+            column = kwargs.get("column")
+            
+            if expectation_type == "expect_column_values_to_not_be_null" and column:
+                # Filter rows where this column is null
+                if column in df.columns:
+                    non_compliant_filter = non_compliant_filter | pl.col(column).is_null()
+            elif expectation_type == "expect_column_values_to_be_between" and column:
+                min_value = kwargs.get("min_value")
+                max_value = kwargs.get("max_value")
+                if column in df.columns:
+                    if min_value is not None:
+                        non_compliant_filter = non_compliant_filter | (pl.col(column) < min_value)
+                    if max_value is not None:
+                        non_compliant_filter = non_compliant_filter | (pl.col(column) > max_value)
+        
+        # Apply the filter to separate rows
+        try:
+            non_compliant_df = df.filter(non_compliant_filter)
+            compliant_df = df.filter(~non_compliant_filter)
+        except Exception as e:
+            # Fallback: if filter fails, quarantine all (conservative)
+            logger.warning(f"Filter application failed: {e}, quarantining all rows")
+            non_compliant_df = df
+            compliant_df = pl.DataFrame(schema=df.schema)
+
+        logger.info(
+            f"Quarantine Pattern: {compliant_df.height} compliant rows, "
+            f"{non_compliant_df.height} non-compliant rows moved to quarantine."
+        )
+
+        return compliant_df, non_compliant_df, validation_metadata
 
     def _generate_data_drift_report(
         self,
@@ -414,6 +506,70 @@ class SilverLayer:
                 """
             )
             con.execute("INSERT INTO drift_reports SELECT * FROM drift_df")
+
+    def _quarantine_non_compliant_rows(
+        self,
+        non_compliant_df: pl.DataFrame,
+        validation_metadata: Dict[str, Any],
+        partition_key: Optional[str] = None,
+    ) -> None:
+        """
+        Moves non-compliant rows to quarantine directory with full audit trail.
+
+        This implements the Quarantine Pattern as specified in MRM standards:
+        - Non-compliant rows are preserved in /data/quarantine/
+        - Full audit trail is maintained via metadata
+        - Lineage tracking is preserved
+        - Type-safe operations with proper type hints
+
+        Args:
+            non_compliant_df: DataFrame containing rows that failed validation.
+            validation_metadata: Dict with validation failure details.
+            partition_key: Optional partition identifier for this run.
+        """
+        quarantine_dir = Path("data/quarantine")
+        quarantine_dir.mkdir(parents=True, exist_ok=True)
+
+        # Generate quarantine filename with timestamp
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        quarantine_filename = f"quarantine_{timestamp}_{partition_key or 'full'}.parquet"
+        quarantine_path = quarantine_dir / quarantine_filename
+
+        # Add quarantine metadata columns
+        quarantine_df = non_compliant_df.with_columns([
+            pl.lit(timestamp).alias("quarantine_timestamp"),
+            pl.lit(partition_key or "full").alias("partition_key"),
+            pl.lit(validation_metadata.get("expectation_suite_name", "unknown")).alias(
+                "failed_expectation_suite"
+            ),
+            pl.lit(str(validation_metadata.get("run_id", ""))).alias("validation_run_id"),
+        ])
+
+        # Write to quarantine
+        quarantine_df.write_parquet(quarantine_path)
+
+        # Log quarantine details for audit trail
+        logger.warning(
+            f"Quarantined {non_compliant_df.height} non-compliant rows to {quarantine_path}"
+        )
+
+        # Emit lineage event for quarantine dataset
+        try:
+            quarantine_dataset = Dataset(
+                namespace=self._namespace,
+                name=f"quarantine/{quarantine_filename}",
+            )
+            self.ol_client.emit(
+                RunEvent(
+                    eventType=RunState.COMPLETE,
+                    eventTime=datetime.now(timezone.utc).isoformat(),
+                    run=Run(runId=str(uuid.uuid4())),
+                    job=Job(namespace=self._namespace, name="quarantine_write"),
+                    outputs=[quarantine_dataset],
+                )
+            )
+        except Exception as e:
+            logger.warning(f"Failed to emit quarantine lineage event: {e!s}")
 
     def _emit_lineage(
         self,

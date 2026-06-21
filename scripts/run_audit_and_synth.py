@@ -1,4 +1,9 @@
 import os
+import sys
+from dotenv import load_dotenv
+
+load_dotenv()
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import time
 import json
 import uuid
@@ -89,7 +94,7 @@ class Orchestrator:
             "amount_mean": 5.0,
             "amount_std": 1.0,
             "velocity_lambda": 10.0,
-            "dataset_size": 100000,
+            "dataset_size": 10000,
             "total_queries_per_year": 12,
             "query_type": "standard",
             "clipping_bound": 5000.0,

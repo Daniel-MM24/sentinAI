@@ -37,9 +37,6 @@ Run the orchestrator to initialize the pipeline:
 python scripts/run_audit_and_synth.py
 ```
 
-## Configuration
-
-Copy `.env.example` to `.env` and configure your environment variables.
 
 ## Compliance
 

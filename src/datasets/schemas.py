@@ -1,6 +1,7 @@
 import pandera.polars as pa
 import polars as pl
 from pandera.typing.polars import DataFrame, Series
+from typing import Annotated
 
 class SilverRecordSchema(pa.DataFrameModel):
     """
@@ -12,12 +13,8 @@ class SilverRecordSchema(pa.DataFrameModel):
     email: str = pa.Field(nullable=True)
     tax_id: str = pa.Field(nullable=True)
     currency: str = pa.Field(nullable=True)
-    amount: float = pa.Field(nullable=True)
-    timestamp: str = pa.Field(nullable=True)
-    
-    @pa.check("amount")
-    def amount_is_positive(cls, series: pl.Series) -> pl.Series:
-        return series >= 0
+    amount: float = pa.Field(nullable=True, ge=0)
+    timestamp: pl.Datetime("us", "UTC") = pa.Field(nullable=True)
 
     class Config:
         strict = False  # allow other columns to pass through
@@ -30,7 +27,7 @@ class GoldFeatureSchema(pa.DataFrameModel):
     """
     customer_id: str = pa.Field(nullable=False)
     amount: float = pa.Field(nullable=True)
-    timestamp: str = pa.Field(nullable=True)
+    timestamp: pl.Datetime("us", "UTC") = pa.Field(nullable=True)
     partition_date: str = pa.Field(nullable=True)
     
     # Feature Engineering Outputs

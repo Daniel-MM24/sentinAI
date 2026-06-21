@@ -1,0 +1,14 @@
+{
+  "postgres": {
+    "uri": "postgresql+asyncpg://dummy:dummy@localhost:5432/sentinai_dummy",
+    "timeout": 30
+  },
+  "s3": {
+    "bucket": "sentinai-dummy-bronze",
+    "region": "us-east-1"
+  },
+  "kafka": {
+    "bootstrap_servers": "localhost:9092",
+    "topic_transactions": "raw_transactions_dummy"
+  }
+}

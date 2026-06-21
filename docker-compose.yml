@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # 1. Vector Search: Local ChromaDB instance
   chromadb:
@@ -49,10 +47,6 @@ services:
       - ./ollama_data:/root/.ollama
     networks:
       - sentinai_net
-
-networks:
-  sentinai_net:
-    driver: bridge
 
   # 5. Core API Application
   api:
@@ -106,6 +100,55 @@ networks:
     networks:
       - sentinai_net
 
+  # 8. Marquez - OpenLineage Backend
+  marquez-db:
+    image: postgres:15
+    container_name: sentinai_marquez_db
+    environment:
+      - POSTGRES_USER=marquez
+      - POSTGRES_PASSWORD=marquez
+      - POSTGRES_DB=marquez
+    volumes:
+      - marquez_db:/var/lib/postgresql/data
+    networks:
+      - sentinai_net
+
+  marquez:
+    image: ilum/marquez:latest
+    container_name: sentinai_marquez
+    ports:
+      - "5000:5000"
+    environment:
+      - POSTGRES_HOST=marquez-db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=marquez
+      - POSTGRES_USER=marquez
+      - POSTGRES_PASSWORD=marquez
+    depends_on:
+      - marquez-db
+    networks:
+      - sentinai_net
+
+  # 9. Marquez UI
+  marquez-ui:
+    image: ilum/marquez-web:latest
+    container_name: sentinai_marquez_ui
+    ports:
+      - "3001:3000"
+    environment:
+      - MARQUEZ_HOST=marquez
+      - MARQUEZ_PORT=5000
+      - WEB_PORT=3000
+    depends_on:
+      - marquez
+    networks:
+      - sentinai_net
+
 volumes:
   pgdata:
   minio_data:
+  marquez_db:
+
+networks:
+  sentinai_net:
+    driver: bridge
