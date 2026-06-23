@@ -1,0 +1,51 @@
+# SentinAI Synthetic Data Generator - Simulation Distribution Profiles
+#
+# Each profile under `profiles:` is consumed directly by
+# `src.data.synthetic_engine.DistributionParams` and is validated by
+# `src.data.validators.SimulationProfile` (Pydantic V2).
+#
+# MRM (Model Risk Management) note: every numeric parameter below is traceable
+# to audited Safaricom PLC FY2026 macro telemetry or to a Kenyan statutory bound
+# (250,000.00 KSh single-transaction limit). See the audit log in
+# docs/audit/m_pesa_fy26_calibration.md for the full derivation.
+
+profiles:
+  m_pesa_fy26_calibrated:
+    # --- Provenance / audit metadata ---
+    model_version: "fy26.1.0"
+    description: >-
+      M-PESA ecosystem profile calibrated against audited Safaricom PLC FY2026
+      annual results (40.99M active nodes, 46.41B annual transactions,
+      KSh 41.68T value, KSh 898.08 average transaction value).
+    source: "Safaricom PLC FY2026 Annual Results"
+
+    # --- Categorical transaction mix (must sum to exactly 1.0) ---
+    transaction_type_probs:
+      C2B: 0.46
+      P2P: 0.38
+      B2C: 0.11
+      B2B: 0.05
+
+    # --- Log-normal transaction amount distribution (KSh) ---
+    # mu/sigma of the underlying normal. Preserves the high positive skew of the
+    # low-value "kadogo" economy while reproducing the macro mean:
+    #   median = exp(mu)                 = exp(6.02)            ~= KSh 411.6
+    #   mean   = exp(mu + sigma^2 / 2)   = exp(6.02 + 0.78125)  ~= KSh 898.6
+    amount_mean: 6.02
+    amount_std: 1.25
+
+    # --- Temporal velocity (exponential inter-arrival) ---
+    # Mean minutes between transactions for a single active entity, sized to a
+    # 16-hour (960-minute) daily waking window.
+    velocity_lambda: 320.0
+
+    # --- Differential Privacy meta-parameters ---
+    # clipping_bound mirrors the statutory KSh 250,000.00 single-transaction
+    # limit and bounds global query sensitivity.
+    dataset_size: 40990000
+    total_queries_per_year: 50000
+    query_type: "standard"
+    clipping_bound: 250000.0
+
+    # --- Reproducibility ---
+    seed: 42
