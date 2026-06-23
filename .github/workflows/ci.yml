@@ -14,7 +14,8 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          # Full history so Gitleaks can scan the PR/push commit range.
+          fetch-depth: 0
 
       - name: Log Execution Environment
         run: |
