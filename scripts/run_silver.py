@@ -31,20 +31,26 @@ def main():
         logger.info(f"Read {bronze_df.height} records from Bronze layer")
         
         logger.info("Transforming data to Silver...")
-        silver_df = silver_layer.transform_to_silver(
+        transaction_fact_df, customer_dimension_df = silver_layer.transform_to_silver(
             bronze_df,
             partition_key=partition_key
         )
         
-        # Persist silver dataframe to disk
+        # Persist silver dataframes to disk
         silver_dir = Path("data/silver")
         silver_dir.mkdir(parents=True, exist_ok=True)
         
-        silver_path = silver_dir / f"silver_{partition_key}.parquet"
-        silver_df.write_parquet(silver_path)
+        # Persist transaction fact stream
+        transactions_path = silver_dir / f"silver_transactions_{partition_key}.parquet"
+        transaction_fact_df.write_parquet(transactions_path)
         
-        logger.info(f"Silver data persisted to: {silver_path}")
-        logger.info(f"Silver transformation complete: {bronze_df.height} → {silver_df.height} records")
+        # Persist customer dimension registry
+        customers_path = silver_dir / f"silver_customers_{partition_key}.parquet"
+        customer_dimension_df.write_parquet(customers_path)
+        
+        logger.info(f"Transaction fact stream persisted to: {transactions_path}")
+        logger.info(f"Customer dimension registry persisted to: {customers_path}")
+        logger.info(f"Silver transformation complete: {bronze_df.height} → {transaction_fact_df.height} (facts) + {customer_dimension_df.height} (customers)")
         logger.info("Silver Layer Transformation successfully completed.")
         
     except Exception as e:

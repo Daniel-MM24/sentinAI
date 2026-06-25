@@ -38,15 +38,23 @@ def main():
             }
         )
         
-        synthetic_data = generator.generate_batch(n_records=1000, num_users=200)
+        synthetic_data = generator.generate_batch(n_records=10000, num_users=2000)
         logger.info(f"Generated {synthetic_data.height} synthetic records")
         
         partition_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        bronze_path = bronze_layer.ingest_synthetic_data(
-            synthetic_data,
-            source_table="synthetic_transactions",
-            partition_key=partition_key
-        )
+        
+        # Check if Bronze partition already has data to prevent duplicate ingestion
+        existing_bronze = bronze_layer.read_bronze_partition(partition_key)
+        if existing_bronze.height > 0:
+            logger.warning(f"Bronze partition {partition_key} already contains {existing_bronze.height} records. Skipping ingestion to prevent duplicates.")
+            logger.info("To re-ingest, remove the existing partition data first.")
+            bronze_path = f"data/bronze/transactions/{partition_key}"
+        else:
+            bronze_path = bronze_layer.ingest_synthetic_data(
+                synthetic_data,
+                source_table="synthetic_transactions",
+                partition_key=partition_key
+            )
         logger.info(f"Bronze data written to: {bronze_path}")
         logger.info("Bronze Layer Ingestion successfully completed.")
         

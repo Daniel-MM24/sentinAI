@@ -1,0 +1,24 @@
+{
+  "layer": "bronze",
+  "source_table": "synthetic_transactions",
+  "run_id": "89129893-3f9d-48bc-acef-6411d2907339",
+  "partition_key": "2026-06-25",
+  "ingestion_timestamp": "2026-06-25T07:01:53.807387+00:00",
+  "row_count": 998,
+  "schema": {
+    "customer_id": "String",
+    "customer_name": "String",
+    "amount": "Float64",
+    "timestamp": "String",
+    "channel_type": "String",
+    "tax_id": "String",
+    "email": "String",
+    "currency": "String",
+    "source_table": "String",
+    "ingestion_date": "String",
+    "source_type": "String",
+    "synthetic_flag": "Boolean"
+  },
+  "parquet_path": "data/bronze/transactions/2026-06-25/bronze_synthetic_89129893-3f9d-48bc-acef-6411d2907339.parquet",
+  "immutable": true
+}

@@ -66,6 +66,10 @@ artifacts/*.md
 test_*.py
 clear_data_test.py
 
+# Test files in subdirectories
+**/test.py
+**/test_*.py
+
 # Pytest / Coverage
 .pytest_cache/
 .coverage

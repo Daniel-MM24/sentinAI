@@ -1,0 +1,75 @@
+{
+  "run_id": "1fe7bfae-9187-4ea5-a0ed-abff3f4d966c",
+  "timestamp": "20260625T075652",
+  "parameters_used": {
+    "transaction_type_probs": {
+      "P2P": 0.6,
+      "C2B": 0.3,
+      "B2C": 0.1
+    },
+    "amount_mean": 5.0,
+    "amount_std": 1.0,
+    "velocity_lambda": 10.0,
+    "dataset_size": 10000,
+    "total_queries_per_year": 12,
+    "query_type": "standard",
+    "clipping_bound": 5000.0,
+    "seed": 42,
+    "model_version": "v1.0"
+  },
+  "fidelity_report": {
+    "ks_statistic": 0.3593,
+    "p_value": 0.0,
+    "is_aligned": false,
+    "model_version": "v1.0",
+    "fidelity_status": "FAIL"
+  },
+  "record_count": 10000,
+  "head": [
+    {
+      "transaction_id": "txn_0_1782374214",
+      "sender_id": "user_1169",
+      "transaction_amount": 1.0,
+      "timestamp": "2024-01-01T00:01:47",
+      "channel_type": "P2P",
+      "tax_id": "TAX-840687784",
+      "email": "user_1995@outlook.com"
+    },
+    {
+      "transaction_id": "txn_1_1782374214",
+      "sender_id": "user_1971",
+      "transaction_amount": 454.31,
+      "timestamp": "2024-01-01T00:05:51",
+      "channel_type": "P2P",
+      "tax_id": "TAX-150201068",
+      "email": "user_1701@gmail.com"
+    },
+    {
+      "transaction_id": "txn_2_1782374214",
+      "sender_id": "user_1683",
+      "transaction_amount": 1.0,
+      "timestamp": "2024-01-01T00:18:30",
+      "channel_type": "P2P",
+      "tax_id": "TAX-331102188",
+      "email": "user_3843@gmail.com"
+    },
+    {
+      "transaction_id": "txn_3_1782374214",
+      "sender_id": "user_1089",
+      "transaction_amount": 1.0,
+      "timestamp": "2024-01-01T00:22:55",
+      "channel_type": "P2P",
+      "tax_id": "TAX-936564188",
+      "email": "user_1639@hotmail.com"
+    },
+    {
+      "transaction_id": "txn_4_1782374214",
+      "sender_id": "user_283",
+      "transaction_amount": 899.09,
+      "timestamp": "2024-01-01T00:40:29",
+      "channel_type": "P2P",
+      "tax_id": "TAX-586999136",
+      "email": "user_7189@yahoo.com"
+    }
+  ]
+}

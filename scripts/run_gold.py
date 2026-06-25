@@ -23,20 +23,31 @@ def main():
         gold_layer = GoldLayer(version="v1.0")
         
         partition_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        silver_path = Path("data/silver") / f"silver_{partition_key}.parquet"
         
-        if not silver_path.exists():
-            logger.error(f"Silver data not found at {silver_path}")
+        # Read transaction fact stream
+        transactions_path = Path("data/silver") / f"silver_transactions_{partition_key}.parquet"
+        if not transactions_path.exists():
+            logger.error(f"Transaction fact stream not found at {transactions_path}")
             sys.exit(1)
-            
-        logger.info(f"Reading silver data from: {silver_path}")
-        silver_df = pl.read_parquet(silver_path)
-        logger.info(f"Read {silver_df.height} records from Silver layer")
+        
+        logger.info(f"Reading transaction fact stream from: {transactions_path}")
+        transactions_df = pl.read_parquet(transactions_path)
+        logger.info(f"Read {transactions_df.height} transaction records from Silver layer")
+        
+        # Read customer dimension registry
+        customers_path = Path("data/silver") / f"silver_customers_{partition_key}.parquet"
+        if not customers_path.exists():
+            logger.error(f"Customer dimension registry not found at {customers_path}")
+            sys.exit(1)
+        
+        logger.info(f"Reading customer dimension registry from: {customers_path}")
+        customers_df = pl.read_parquet(customers_path)
+        logger.info(f"Read {customers_df.height} customer records from Silver layer")
         
         logger.info("Creating feature store...")
         gold_uri = gold_layer.create_feature_store(
-            transactions_df=silver_df,
-            customers_df=silver_df  # Using same data for demo
+            transactions_df=transactions_df,
+            customers_df=customers_df
         )
         
         logger.info(f"Gold feature store created at: {gold_uri}")

@@ -128,6 +128,7 @@ class SyntheticMpesaGenerator:
         )
 
         # 6. Apply strict business rules and constraint enforcement
+        # Modified: Generate unique (tax_id, email) pairs to prevent deduplication loss in Silver layer
         valid_records = []
         for i in range(n_records):
             sender = self._rng.choice(user_ids)
@@ -143,16 +144,44 @@ class SyntheticMpesaGenerator:
                     "timestamp": timestamps[i],
                     "channel_type": channels[i]
                 })
+            else:
+                # If balance constraint fails, assign to a random user with sufficient balance
+                # This ensures we generate the requested number of records
+                eligible_senders = [uid for uid, bal in user_balances.items() if bal >= amount]
+                if eligible_senders:
+                    sender = self._rng.choice(eligible_senders)
+                    user_balances[sender] -= amount
+                    valid_records.append({
+                        "transaction_id": f"txn_{i}_{int(time.time())}",
+                        "sender_id": sender,
+                        "transaction_amount": round(float(amount), 2),
+                        "timestamp": timestamps[i],
+                        "channel_type": channels[i]
+                    })
 
         # Audit trail logging
         logger.info(f"Generated {len(valid_records)} valid synthetic records out of {n_records} attempted.")
         logger.info(f"Audit Trail - Seed: {self.params.seed}, Model Version: {self.params.model_version}")
 
         # Construct Polars DataFrame with valid tax_id and email for compliance
-        # Generate valid tax_id values for compliance
-        tax_ids = [f"TAX-{self._rng.integers(100000000, 999999999)}" for _ in range(len(valid_records))]
+        # CRITICAL FIX: Generate unique (tax_id, email) pairs to prevent deduplication loss in Silver layer
+        # The Silver layer performs exact-match deduplication on (tax_id, email), so we must ensure uniqueness
+        tax_ids = []
         email_domains = ["gmail.com", "yahoo.com", "hotmail.com", "outlook.com"]
-        emails = [f"user_{self._rng.integers(1000, 9999)}@{self._rng.choice(email_domains)}" for _ in range(len(valid_records))]
+        emails = []
+        used_pairs = set()  # Track used (tax_id, email) combinations
+        
+        for _ in range(len(valid_records)):
+            # Generate unique tax_id and email combinations
+            while True:
+                tax_id = f"TAX-{self._rng.integers(100000000, 999999999)}"
+                email = f"user_{self._rng.integers(1000, 9999)}@{self._rng.choice(email_domains)}"
+                pair = (tax_id, email)
+                if pair not in used_pairs:
+                    used_pairs.add(pair)
+                    tax_ids.append(tax_id)
+                    emails.append(email)
+                    break
         
         # Add tax_id and email to valid records
         for i, record in enumerate(valid_records):

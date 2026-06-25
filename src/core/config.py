@@ -24,6 +24,12 @@ class Settings(BaseSettings):
         description="OpenLineage namespace for tracking."
     )
 
+    # Agent Orchestration Configuration
+    RISK_ESCALATION_THRESHOLD: float = Field(
+        default=0.7,
+        description="Risk score above which the audit escalates to a human.",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -31,3 +37,4 @@ class Settings(BaseSettings):
     )
 
 config = Settings()
+settings = config  # Alias for backward compatibility

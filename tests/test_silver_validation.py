@@ -155,8 +155,8 @@ def test_clean_and_standardize():
 run_test("_clean_and_standardize: normalizes email/name/currency", test_clean_and_standardize)
 
 
-# ---------- Test: _resolve_entities (dedup) ----------
-def test_resolve_dedup():
+# ---------- Test: _split_fact_and_dimension (dedup) ----------
+def test_split_fact_and_dimension():
     layer = make_layer()
     df = pl.DataFrame({
         "customer_id": ["C001", "C001", "C002"],
@@ -168,11 +168,11 @@ def test_resolve_dedup():
         "timestamp": ["2024-01-15T10:30:00", "2024-02-20T14:00:00", "2024-03-01T09:00:00"],
     })
     df = df.with_columns(pl.col("timestamp").str.to_datetime())
-    result = layer._resolve_entities(df)
-    assert result.height == 2, f"Expected 2 rows after dedup, got {result.height}"
-    assert "golden_record_id" in result.columns, "Missing golden_record_id column"
+    transaction_fact_df, customer_dimension_df = layer._split_fact_and_dimension(df)
+    assert transaction_fact_df.height == 3 and customer_dimension_df.height == 2, f"Expected 2 rows after dedup, got {result.height}"
+    assert "golden_record_id" in customer_dimension_df.columns, "Missing golden_record_id column"
 
-run_test("_resolve_entities: collapses duplicates and adds golden_record_id", test_resolve_dedup)
+run_test("_split_fact_and_dimension: collapses duplicates and adds golden_record_id", test_split_fact_and_dimension)
 
 
 # ---------- Test: _generate_data_drift_report (DuckDB) ----------
@@ -188,7 +188,7 @@ def test_drift_duckdb():
         "timestamp": ["2024-01-01", "2024-01-02", "2024-01-03"],
     })
     silver = bronze.head(2)
-    layer._generate_data_drift_report(bronze, silver)
+    layer._generate_data_drift_report(bronze, silver, silver)
 
     # Verify DuckDB wrote a row
     con = duckdb_mod.connect(layer._drift_db_path)
@@ -235,9 +235,10 @@ run_test("Class constants: ER_LOGIC_VERSION and FUZZY_MATCH_THRESHOLD", test_er_
 def test_lineage_emission():
     layer = make_layer()
     df = make_sample_df()
-    with patch.object(layer, "_validate_quality"):
-        with patch.object(layer, "_generate_data_drift_report"):
-            layer.transform_to_silver(df)
+    with patch.object(layer, "_validate_quality", return_value=(df, pl.DataFrame(), {})):
+        with patch.object(layer, "_split_fact_and_dimension", return_value=(df, df)):
+            with patch.object(layer, "_generate_data_drift_report"):
+                layer.transform_to_silver(df)
 
     # OL client should have been called: START + COMPLETE = 2 emit calls
     assert layer.ol_client.emit.call_count == 2, (
@@ -245,7 +246,6 @@ def test_lineage_emission():
     )
 
 run_test("OpenLineage: emits START and COMPLETE events", test_lineage_emission)
-
 
 # ---------- Test: Lineage failure on transform error ----------
 def test_lineage_on_failure():
@@ -263,19 +263,20 @@ def test_lineage_on_failure():
 
 run_test("OpenLineage: emits START and FAIL on error", test_lineage_on_failure)
 
-
 # ---------- Test: partition_key flows through ----------
 def test_partition_key():
     layer = make_layer()
     df = make_sample_df()
-    with patch.object(layer, "_validate_quality"):
-        with patch.object(layer, "_generate_data_drift_report") as mock_drift:
-            layer.transform_to_silver(df, partition_key="2024-01-15")
+    with patch.object(layer, "_validate_quality", return_value=(df, pl.DataFrame(), {})):
+        with patch.object(layer, "_split_fact_and_dimension", return_value=(df, df)):
+            with patch.object(layer, "_generate_data_drift_report") as mock_drift:
+                layer.transform_to_silver(df, partition_key="2024-01-15")
     mock_drift.assert_called_once()
     _, kwargs = mock_drift.call_args
     assert kwargs.get("partition_key") == "2024-01-15"
 
 run_test("transform_to_silver: passes partition_key to drift report", test_partition_key)
+
 
 
 # ---------------------------------------------------------------------------
@@ -290,3 +291,37 @@ if failed > 0:
     sys.exit(1)
 else:
     print("✓ All validations passed!")
+
+# ---------- Test: Fact-Dimension Separation Preserves Transaction History ----------
+def test_fact_dimension_separation_preserves_history():
+    """Test that duplicate customer records with distinct timestamps are preserved as unique history rows."""
+    layer = make_layer()
+    
+    # Create test data: same customer with 3 distinct transactions
+    df = pl.DataFrame({
+        "customer_id": ["C001", "C001", "C001"],
+        "customer_name": ["ALICE SMITH", "ALICE SMITH", "ALICE SMITH"],
+        "email": ["alice@example.com", "alice@example.com", "alice@example.com"],
+        "tax_id": ["TAX001", "TAX001", "TAX001"],
+        "currency": ["USD", "USD", "USD"],
+        "amount": [100.0, 200.0, 300.0],
+        "timestamp": ["2024-01-15T10:30:00", "2024-02-20T14:00:00", "2024-03-01T09:00:00"],
+    })
+    df = df.with_columns(pl.col("timestamp").str.to_datetime())
+    
+    # Split into fact and dimension
+    transaction_fact_df, customer_dimension_df = layer._split_fact_and_dimension(df)
+    
+    # Assert transaction fact stream preserves all 3 events
+    assert transaction_fact_df.height == 3, f"Expected 3 transaction events, got {transaction_fact_df.height}"
+    
+    # Assert customer dimension registry collapses to 1 unique customer
+    assert customer_dimension_df.height == 1, f"Expected 1 unique customer, got {customer_dimension_df.height}"
+    
+    # Assert golden_record_id is present in dimension
+    assert "golden_record_id" in customer_dimension_df.columns, "Missing golden_record_id in customer dimension"
+    
+    # Assert fact stream has golden_record_id for join capability
+    assert "golden_record_id" in transaction_fact_df.columns, "Missing golden_record_id in transaction fact stream"
+
+run_test("Fact-Dimension Separation: preserves transaction history for duplicate customers", test_fact_dimension_separation_preserves_history)
