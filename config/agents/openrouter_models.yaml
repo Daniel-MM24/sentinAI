@@ -1,0 +1,55 @@
+# OpenRouter Model Configuration Matrix
+# Maps agent roles to specific OpenRouter model identifiers
+
+default:
+  model: "anthropic/claude-3.5-sonnet"
+  temperature: 0.0
+  use_openrouter: true
+  openrouter_headers:
+    X-Title: "SentinAI"
+    HTTP-Referer: "https://github.com/Daniel-MM24/sentinai"
+
+agents:
+  researcher:
+    model: "anthropic/claude-3.5-sonnet"
+    temperature: 0.0
+    use_openrouter: true
+    openrouter_headers:
+      X-Title: "SentinAI-Researcher"
+      HTTP-Referer: "https://github.com/Daniel-MM24/sentinai"
+  
+  auditor:
+    model: "anthropic/claude-3.5-sonnet"
+    temperature: 0.0
+    use_openrouter: true
+    openrouter_headers:
+      X-Title: "SentinAI-Auditor"
+      HTTP-Referer: "https://github.com/Daniel-MM24/sentinai"
+  
+  analyst:
+    model: "anthropic/claude-3.5-sonnet"
+    temperature: 0.0
+    use_openrouter: true
+    openrouter_headers:
+      X-Title: "SentinAI-Analyst"
+      HTTP-Referer: "https://github.com/Daniel-MM24/sentinai"
+
+# Alternative model configurations for different use cases
+alternatives:
+  high_performance:
+    model: "anthropic/claude-3.5-sonnet"
+    temperature: 0.0
+  
+  cost_optimized:
+    model: "openai/gpt-4o-mini"
+    temperature: 0.0
+  
+  creative:
+    model: "anthropic/claude-3.5-sonnet"
+    temperature: 0.7
+
+# LangSmith environment configuration
+langsmith:
+  enabled: true
+  project: "sentinai"
+  endpoint: "https://eu.api.smith.langchain.com"

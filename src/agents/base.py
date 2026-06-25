@@ -37,6 +37,8 @@ class BaseAgent(ABC):
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model_name: str = "gpt-4o-mini",
+        use_openrouter: bool = False,
+        openrouter_headers: Optional[Dict[str, str]] = None,
     ):
         self.name = name
         self.system_prompt = system_prompt
@@ -45,12 +47,35 @@ class BaseAgent(ABC):
         if llm is None:
             from langchain_openai import ChatOpenAI
 
-            self.llm = ChatOpenAI(
-                model=model_name,
-                temperature=temperature,
-                api_key=SecretStr(api_key) if api_key else None,
-                base_url=base_url,
-            )
+            # OpenRouter-specific configuration
+            if use_openrouter:
+                openrouter_base_url = base_url or "https://openrouter.ai/api/v1"
+                openrouter_api_key = api_key or SecretStr("")
+                
+                # Default OpenRouter headers
+                default_headers = {
+                    "X-Title": "SentinAI",
+                    "HTTP-Referer": "https://github.com/Daniel-MM24/sentinAI",
+                }
+                
+                # Merge with custom headers if provided
+                if openrouter_headers:
+                    default_headers.update(openrouter_headers)
+                
+                self.llm = ChatOpenAI(
+                    model=model_name,
+                    temperature=temperature,
+                    api_key=openrouter_api_key,
+                    base_url=openrouter_base_url,
+                    default_headers=default_headers,
+                )
+            else:
+                self.llm = ChatOpenAI(
+                    model=model_name,
+                    temperature=temperature,
+                    api_key=SecretStr(api_key) if api_key else None,
+                    base_url=base_url,
+                )
         else:
             self.llm = llm
 
@@ -67,18 +92,10 @@ class BaseAgent(ABC):
     def _invoke_llm_structured(
         self, messages: List[BaseMessage], model_cls: type[T]
     ) -> T:
-        """Invoke the LLM and parse the response as a structured Pydantic model."""
-        response_text = self._invoke_llm(messages)
-
-        # Try to extract JSON from the response
-        import re
-
-        json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
-        if not json_match:
-            raise ValueError("No JSON object found in model response")
-
-        data = json.loads(json_match.group(0))
-        return model_cls.model_validate(data)
+        """Invoke the LLM and parse the response as a structured Pydantic model using native structured output."""
+        structured_llm = self.llm.with_structured_output(model_cls)
+        result = structured_llm.invoke(messages)
+        return result
 
     def _build_messages(
         self, state: AgentState, additional_context: Optional[str] = None

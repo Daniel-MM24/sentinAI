@@ -1,0 +1,105 @@
+# ML Model Configuration and Verification Schemas
+# Defines Pydantic verification schemas for ML artifacts and model metadata
+
+# Model artifact verification schemas
+model_artifacts:
+  # Compliance risk scoring model
+  compliance_risk_model:
+    type: "sklearn RandomForestClassifier"
+    version: "1.0.0"
+    features:
+      - transaction_amount
+      - customer_risk_score
+      - geographic_risk_indicator
+      - time_pattern_anomaly
+      - frequency_deviation
+    output:
+      type: "probability"
+      range: [0.0, 1.0]
+    validation:
+      min_accuracy: 0.85
+      max_false_positive_rate: 0.15
+      calibration_required: true
+    hooks:
+      pre_inference: "validate_input_features"
+      post_inference: "log_prediction_metadata"
+      shap_explanation: "generate_shap_values"
+      lime_explanation: "generate_lime_values"
+  
+  # Anomaly detection model
+  anomaly_detection_model:
+    type: "sklearn IsolationForest"
+    version: "1.0.0"
+    features:
+      - transaction_velocity
+      - amount_deviation
+      - location_change_frequency
+      - device_fingerprint_score
+    output:
+      type: "anomaly_score"
+      range: [-1.0, 1.0]
+    validation:
+      min_precision: 0.80
+      min_recall: 0.75
+    hooks:
+      pre_inference: "check_feature_drift"
+      post_inference: "update_anomaly_statistics"
+
+# Feature engineering schemas
+features:
+  transaction_risk_features:
+    schema:
+      transaction_amount: float
+      customer_age_days: int
+      risk_category: str
+      is_high_risk_country: bool
+      transaction_frequency_24h: int
+      amount_deviation_score: float
+    validation:
+      required_fields: ["transaction_amount", "customer_age_days"]
+      value_ranges:
+        transaction_amount: [0.0, 1000000.0]
+        customer_age_days: [0, 36500]
+  
+  customer_risk_profile:
+    schema:
+      customer_id: str
+      total_transactions: int
+      avg_transaction_amount: float
+      risk_score: float
+      last_activity_days: int
+      compliance_flags: list
+    validation:
+      required_fields: ["customer_id", "risk_score"]
+      value_ranges:
+        risk_score: [0.0, 1.0]
+        total_transactions: [0, 1000000]
+
+# Model registry metadata
+registry:
+  environment: "production"
+  storage_backend: "s3"
+  storage_path: "s3://sentinai-models/prod/"
+  lineage_tracking:
+    enabled: true
+    backend: "openlineage"
+    namespace: "sentinai-models"
+  
+  deployment:
+    strategy: "canary"
+    canary_percentage: 10
+    rollback_threshold: 0.05
+
+# SHAP/LIME configuration
+explainability:
+  shap:
+    enabled: true
+    background_sample_size: 100
+    algorithm: "tree"
+    output_format: "json"
+  
+  lime:
+    enabled: true
+    num_samples: 5000
+    kernel_width: 0.75
+    feature_selection: "auto"

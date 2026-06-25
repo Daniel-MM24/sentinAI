@@ -5,7 +5,7 @@ from typing import Any, AsyncIterator, Dict, Iterator, Optional, cast
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import StateGraph, START, END
 
@@ -79,6 +79,7 @@ class AuditGraph:
             evaluation=None,
             requires_escalation=False,
             final_report=None,
+            calculation_metrics={},
         )
 
     def _config(self, thread_id: str) -> Dict[str, Any]:
@@ -126,7 +127,7 @@ class AuditGraph:
 def create_audit_graph(
     vector_store: VectorStore,
     llm: Optional[BaseChatModel] = None,
-    checkpoint_path: Optional[str] = None,
+    checkpoint_connection_string: Optional[str] = None,
 ) -> AuditGraph:
     """Factory function to create an AuditGraph with configured agents."""
     # Set the global vector store for tools
@@ -137,10 +138,10 @@ def create_audit_graph(
     auditor = AuditorAgent(llm=llm)
     analyst = AnalystAgent(llm=llm)
 
-    # Create checkpointer if path provided
+    # Create PostgresSaver checkpointer if connection string provided
     checkpointer = None
-    if checkpoint_path:
-        checkpointer = SqliteSaver.from_conn_string(checkpoint_path)
+    if checkpoint_connection_string:
+        checkpointer = PostgresSaver.from_conn_string(checkpoint_connection_string)
 
     return AuditGraph(
         researcher=researcher,

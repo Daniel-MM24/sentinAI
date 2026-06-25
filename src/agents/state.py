@@ -1,5 +1,5 @@
 """Agent state definitions for LangGraph orchestration."""
-from typing import TypedDict, Annotated, List, Optional
+from typing import TypedDict, Annotated, List, Optional, Dict, Any
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
@@ -50,3 +50,4 @@ class AgentState(TypedDict):
     evaluation: Optional[ComplianceEvaluation]
     requires_escalation: bool
     final_report: Optional[AnalystReport]
+    calculation_metrics: Optional[Dict[str, Any]]
