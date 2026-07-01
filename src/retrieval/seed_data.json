@@ -1,0 +1,194 @@
+{
+  "documents": [
+    {
+      "id": "doc_cbk_aml_001",
+      "document": "Central Bank of Kenya (CBK), under the Proceeds of Crime and Anti-Money Laundering Act (POCAMLA, 2009, as amended 2023) and CBK Prudential Guideline 43 (PG/43), mandates all payment service providers (PSPs) operating mobile money rails -- including M-Pesa (Safaricom), Airtel Money, T-Kash (Telkom Kenya), and Equitel (Equity Bank) -- to enforce tiered AML/CFT controls on electronic wallet transactions. PG/43 classifies mobile money as a Designated Non-Financial Business and Profession (DNFBP) channel for suspicious transaction reporting (STR) and currency transaction reporting (CTR). Tiered KYC limits apply: Tier 1 (Basic, SIM-only) max single txn KES 10,000, daily cumulative KES 25,000, wallet balance KES 50,000. Tier 2 (Interim, self-declared) max single KES 50,000, daily KES 100,000, wallet KES 200,000. Tier 3 (Full KYC, National ID + Proof of Address) max single KES 150,000, daily KES 500,000, wallet KES 1,000,000. Tier 4 (Enhanced Due Diligence, corporate/institutional) max single KES 500,000, no daily cap but velocity monitored, no balance cap. Aggregated monthly velocity trigger at KES 6,000,000 in a 30-day rolling window triggers automatic CBK reporting from the PSP.",
+      "metadata": {
+        "source": "cbk_amln_tf_guidelines.md",
+        "category": "Regulatory_Framework",
+        "jurisdiction": "KE",
+        "version": "2026.1"
+      }
+    },
+    {
+      "id": "doc_cbk_aml_002",
+      "document": "Mobile money agent float and liquidity limits: maximum agent-to-agent float transfer KES 500,000 per transaction, agent daily aggregate cash-out KES 1,000,000, agent e-float balance cap KES 3,000,000. Any agent whose cumulative daily float volume exceeds KES 2,000,000 must be flagged for suspicious activity review within 24 hours. Agents with falsified registration operating above float caps without CDD are classified as Ghost Agent Arbitrage, detected when daily float volume exceeds KES 2,000,000 AND transaction-to-customer ratio exceeds 50:1.",
+      "metadata": {
+        "source": "cbk_amln_tf_guidelines.md",
+        "category": "Regulatory_Framework",
+        "jurisdiction": "KE",
+        "version": "2026.1"
+      }
+    },
+    {
+      "id": "doc_cbk_aml_003",
+      "document": "Mandatory reporting triggers under CBK PG/43 Section 7 and POCAMLA Section 44: Currency Transaction Report (CTR) required for any single transaction exceeding KES 1,000,000 or any series of related transactions aggregating to KES 1,000,000+ within a single business day. Suspicious Transaction Report (STR) required regardless of amount when PSP suspects funds are proceeds of crime, transaction is structured to evade thresholds, transaction has no apparent lawful purpose, involves a PEP, or involves a sanctioned entity. KES 100,000 is the Velocity Warning Trigger: all transactions above KES 100,000 require automated scoring; daily turnover of KES 100,000+ creates presumption of enhanced risk requiring log, score, and flag within 4 hours.",
+      "metadata": {
+        "source": "cbk_amln_tf_guidelines.md",
+        "category": "Regulatory_Framework",
+        "jurisdiction": "KE",
+        "version": "2026.1"
+      }
+    },
+    {
+      "id": "doc_cbk_aml_004",
+      "document": "Enhanced Due Diligence (EDD) triggers under CBK mobile money regulations: mandatory EDD when aggregate monthly transactions exceed KES 6,000,000, single transaction exceeds KES 500,000, customer conducts more than 20 transactions in a single calendar day (behavioral anomaly), geographic transaction pattern spans more than 3 counties within a 12-hour window, or new account receives first transaction exceeding KES 50,000 requiring intermediate KYC verification within 24 hours. Record-keeping requirement: all transaction records retained for minimum 7 years (POCAMLA Section 48); flagged/suspicious transactions retained for 10 years.",
+      "metadata": {
+        "source": "cbk_amln_tf_guidelines.md",
+        "category": "Regulatory_Framework",
+        "jurisdiction": "KE",
+        "version": "2026.1"
+      }
+    },
+    {
+      "id": "doc_cbk_aml_005",
+      "document": "Structuring typology (Smurfing) in Kenyan mobile money: deliberate splitting of asset pools into multiple transfers below the KES 150,000 per-transaction cap to evade CBK AML detection. Pattern STRUC-001: single source wallet sends KES 140,000-149,000 to 7+ distinct MSISDNs within 60 minutes with aggregate exceeding KES 1,000,000. STRUC-002: multiple new MSISDNs (age under 7 days) each sending KES 140,000-149,999 to same recipient within 2-hour window. STRUC-003: consecutive KES 140,000-149,999 transfers between same payer-payee pair with 45-90 minute cooling-off intervals, repeated 3+ times in 12 hours. STRUC-004: round-number deposits of KES 100,000 from 10+ distinct agent cash-in points within 4 hours followed by single KES 900,000 withdrawal. STRUC-005: layering chain of 3+ hops (Wallet A to B to C to D) each at KES 145,000 within 90 minutes terminating at bank integration point.",
+      "metadata": {
+        "source": "cbk_amln_tf_guidelines.md",
+        "category": "Regulatory_Framework",
+        "jurisdiction": "KE",
+        "version": "2026.1"
+      }
+    },
+    {
+      "id": "doc_cbk_aml_006",
+      "document": "Cuckoo Smurfing typology: illicit funds mixed with legitimate M-Pesa transfers via agent float. Criminal deposits illicit cash into mobile money agent, then uses agent's float to send legitimate-looking P2P transfer to unsuspecting third party. Detection: agent float increases by more than KES 500,000 within 3-hour window AND agent simultaneously initiates more than 10 unique P2P transfers of KES 50,000 or more each. Flagged as Cuckoo_Smurfing_Risk when ratio of inbound cash-in to outbound P2P exceeds 4:1 in any 6-hour window. Trade-Based Money Laundering via merchant payments: inflated merchant payments of KES 100,000-149,000 with no verifiable inventory movement, and circular payments (Merchant to Customer to Merchant B to Merchant A) creating artificial turnover cycles of KES 500,000+ repeated 3+ times in 7 days.",
+      "metadata": {
+        "source": "cbk_amln_tf_guidelines.md",
+        "category": "Regulatory_Framework",
+        "jurisdiction": "KE",
+        "version": "2026.1"
+      }
+    },
+    {
+      "id": "doc_cbk_aml_007",
+      "document": "Mandatory analytical actions for AML transaction monitoring systems on Kenyan mobile money rails. Threshold Breach Detection: when txn_amount exceeds KES 150,000 or daily_cumulative exceeds KES 500,000, auto-flag THRESHOLD_BREACH, lock wallet, block outbound P2P, escalate to AML officer within 2 hours, notify FRC within 7 calendar days if aggregate exceeds KES 1,000,000. Velocity Anomaly Detection: when txn_count_per_day exceeds 20 or daily_aggregate_turnover exceeds KES 100,000, auto-flag VELOCITY_WARNING, score account 1-100, queue for manual review, escalate to AML officer within 4 hours if risk score exceeds 75. Structuring Detection: when amount is between KES 140,000 and KES 149,999 AND same sender-dest daily count >= 3 AND aggregate_12h exceeds KES 500,000, auto-flag STRUCTURING_SUSPECTED, freeze outbound txns above KES 10,000, generate STR draft, correlate receiver clustering by IMEI/geo/temporal, notify FRC within 7 calendar days.",
+      "metadata": {
+        "source": "cbk_amln_tf_guidelines.md",
+        "category": "Regulatory_Framework",
+        "jurisdiction": "KE",
+        "version": "2026.1"
+      }
+    },
+    {
+      "id": "doc_cbk_aml_008",
+      "document": "Additional mandatory analytical actions. New Account Rapid Escalation: when account_age under 7 days AND cumulative_volume exceeds KES 500,000, auto-flag RAPID_ESCALATION, freeze wallet, demand EDD documentation within 48 hours; if no EDD response, permanent freeze plus STR filing. Agent Float Anomaly: when agent_float_growth exceeds KES 500,000 in 3h AND outbound_p2p_count exceeds 10 with each >= KES 50,000, auto-flag CUCKOO_SMURFING_RISK, block agent float top-up, trigger CDD reverification within 2 hours. Geographic Anomaly: when sender_txn_originates_from more than 3 counties in 12h, auto-flag GEOGRAPHIC_ANOMALY, score as high-risk, require biometric re-verification before next transaction. Round-Number Threshold Testing: when amount equals KES 100,000 or KES 140,000 or KES 149,999 AND frequency_per_week >= 5, auto-flag THRESHOLD_TESTING, flag for manual review with 90-day historical lookback.",
+      "metadata": {
+        "source": "cbk_amln_tf_guidelines.md",
+        "category": "Regulatory_Framework",
+        "jurisdiction": "KE",
+        "version": "2026.1"
+      }
+    },
+    {
+      "id": "doc_cbk_aml_009",
+      "document": "Penalties for non-compliance with CBK AML/CFT mobile money regulations. Tier 1 violation (failure to file CTR/STR): fine of KES 5,000,000 per incident plus suspension of PSP license for first repeat offense. Tier 2 violation (inadequate KYC/EDD controls): fine of KES 2,000,000 per incident with mandatory remedial action plan within 30 days. Tier 3 violation (record-keeping failure): fine of KES 1,000,000 per incident. Individual criminal penalties: responsible persons face imprisonment of 3 to 14 years under POCAMLA Section 16 for knowingly facilitating money laundering. Required transaction log schema includes: Txn ID, timestamp ISO 8601, amount KES, sender MSISDN and wallet tier, receiver MSISDN and wallet tier, Agent ID and geo-location (county+GPS), txn type (P2P/Cash-In/Cash-Out/Airtime/Merchant Payment/Bank Transfer/Float Transfer), device IMEI, IP address if OTT/APP, SIM registration match status, and regulatory flag status.",
+      "metadata": {
+        "source": "cbk_amln_tf_guidelines.md",
+        "category": "Regulatory_Framework",
+        "jurisdiction": "KE",
+        "version": "2026.1"
+      }
+    },
+    {
+      "id": "doc_daraja_spec_001",
+      "document": "The Safaricom Daraja API is the programmatic interface to M-Pesa. C2B STK Push callbacks deliver transaction results via Body.stkCallback with keys: MerchantRequestID (string, required, unique per merchant for idempotency), CheckoutRequestID (string, required, Safaricom-generated), ResultCode (int, required, 0=success), ResultDesc (string, required), CallbackMetadata.Item (array, present only on ResultCode=0). The Item array contains key-value objects with Name, Value, ValueType. Critical fields: MpesaReceiptNumber (alphanumeric string, exactly 10 uppercase chars, globally unique), Amount (strictly positive float in KES, max KES 150,000 for C2B), PhoneNumber (E.164 Kenyan format 254XXXXXXXXX), TransactionDate (int, YYYYMMDDHHmmss). B2C payment callbacks use a different structure under Result.ResultParameters.ResultParameter array with Key/Value pairs. Key fields: TransactionID (Safaricom unique ID), TransactionAmount (float, strictly positive), TransactionReceipt (receipt number, same rules as MpesaReceiptNumber), B2CRecipientRegisteredMetadata, B2CChargesPaidAccount (may be negative -- the only numeric field allowed to be negative).",
+      "metadata": {
+        "source": "daraja_api_callback_payload.md",
+        "category": "API_Specification",
+        "system_rail": "Lipa_Na_M-Pesa",
+        "version": "2026.2"
+      }
+    },
+    {
+      "id": "doc_daraja_spec_002",
+      "document": "Field validation rules for Daraja API callbacks. MpesaReceiptNumber / TransactionReceipt: type string, format exactly 10 uppercase alphanumeric chars matching pattern of 10 alphanumeric characters, globally unique per transaction. A duplicate receipt number within a 90-day rolling window with a different MerchantRequestID is a REPLAY_ATTACK. Null, missing, or empty receipt forces callback rejection. TransAmount / Amount / TransactionAmount: type float strictly positive, min KES 1.00, max KES 150,000 for C2B or KES 500,000 for B2C. Zero or negative values rejected. Precision truncated to 2 decimal places, not rounded, to prevent inflation attacks. MSISDN / PhoneNumber: E.164 for Kenya, exactly 12 digits starting with 254, matching pattern of 254 followed by 1 or 7 and 8 more digits. Leading 0 or 7 stripped and normalized to 254 prefix. Missing or null MSISDN is critical failure. TransactionDate: 14-digit YYYYMMDDHHmmss. Future dates beyond 5 min clock skew rejected as replay attack. ResultCode: int, 0 equals success. Non-zero means no metadata array present. Missing or null ResultCode treated as indeterminate.",
+      "metadata": {
+        "source": "daraja_api_callback_payload.md",
+        "category": "API_Specification",
+        "system_rail": "Lipa_Na_M-Pesa",
+        "version": "2026.2"
+      }
+    },
+    {
+      "id": "doc_daraja_spec_003",
+      "document": "Security edge cases and exception logic for Daraja callbacks. Null TransactionType: TransactionType is not present in the callback payload itself; it is derived from the original API request context. A lookup returning null indicates cache-poisoning or replay -- reject and escalate to security within 15 minutes. Missing MerchantRequestID: a callback without correlatable MerchantRequestID or CheckoutRequestID in the pending request store is a CACHE_POISONING_ATTEMPT -- reject, do not process Amount, retain raw payload for forensics, alert SOC. Phantom duplicate receipt: duplicate MpesaReceiptNumber with different MerchantRequestID within 90 days is a REPLAY_ATTACK -- discard callback, alert SOC, block initiating MSISDN. Amount mismatch: callback Amount != original request Amount (diff >= KES 1.00) is AMOUNT_INTEGRITY_FAILURE -- do not credit, hold in suspense, escalate to finance within 1 hour. Orphan callback: CheckoutRequestID not found in request log is an ORPHAN_CALLBACK -- reject as suspicious. B2C inconsistent state: ResultCode non-zero but TransactionReceipt present is INCONSISTENT_B2C_STATE -- do not credit, hold in suspense, flag for CBK compliance audit.",
+      "metadata": {
+        "source": "daraja_api_callback_payload.md",
+        "category": "API_Specification",
+        "system_rail": "Lipa_Na_M-Pesa",
+        "version": "2026.2"
+      }
+    },
+    {
+      "id": "doc_daraja_spec_004",
+      "document": "Payload sanitization pipeline and error handling. Before processing, callbacks must pass: (1) parse JSON -- reject if malformed; (2) strip BOM if present; (3) drop unexpected top-level keys beyond Body/Result -- prevent schema poisoning; (4) reject if Content-Type != application/json; (5) validate HMAC signature if enabled; (6) coerce all numeric fields per type rules; (7) reject if any critical field (MpesaReceiptNumber, Amount, MSISDN) fails; (8) correlate against pending request store for idempotency and anti-replay; (9) apply MSISDN E.164 normalization; (10) log raw payload to audit store before processing. Negative amount allowlist: only B2CChargesPaidAccount may carry negative values; all other numeric fields enforce strictly positive. B2C ResultCode=1 partial payload: may return TransactionReceipt with unreconcilable negative charges -- hold in suspense. Error codes: 0=success, 1=insufficient balance/retry, 103=user cancelled, 1032=user rejected, 2001=invalid payload, 2004=amount below KES 1 or above KES 150,000, 2005=duplicate MerchantRequestID (return cached). Rate limits: STK Push 10 req/s, B2C 5 req/s, OAuth token 1 per 55s.",
+      "metadata": {
+        "source": "daraja_api_callback_payload.md",
+        "category": "API_Specification",
+        "system_rail": "Lipa_Na_M-Pesa",
+        "version": "2026.2"
+      }
+    },
+    {
+      "id": "doc_xgb_model_001",
+      "document": "M-Pesa Fraud XGBoost model card (sentinai_aml_xgb_001, v2.3.1). Model: gradient boosted decision tree binary classifier scoring mobile money transactions as legitimate (0) or suspicious/fraudulent (1). Processes C2B STK Push, B2C disbursements, P2P transfers, and agent float transactions. Outputs fraud probability (0.0 to 1.0) thresholded into risk tiers: 0.00-0.30 Low (auto-approve), 0.31-0.65 Medium (manual review within 4h), 0.66-0.85 High (manual review within 1h, block outbound >KES 10k), 0.86-1.00 Critical (block immediately, freeze wallet, escalate AML officer). Trained on 6,000,000 M-Pesa transaction records (Jan-Dec 2025) with 3.2% positive class ratio, SMOTE-NC oversampled to 1:4. Architecture: 450 estimators, max depth 8, learning rate 0.05, scale pos weight 12.5, AUC-PR evaluation metric. Holdout performance: AUC-ROC 0.968, AUC-PR 0.887, precision at 0.66 threshold 0.775, recall at 0.66 threshold 0.714. Total fraud capture rate at or above Medium tier: 90.3% with 8.6% false positive rate.",
+      "metadata": {
+        "source": "mpesa_fraud_xgboost_card.md",
+        "category": "ML_Model_Card",
+        "system_rail": "Fraud_Detection",
+        "version": "2026.2"
+      }
+    },
+    {
+      "id": "doc_xgb_model_002",
+      "document": "Feature engineering for M-Pesa Fraud XGBoost model. 38 features across 10 groups. Amount Statistics: txn_amount, log_amount, amount_percentile_7d, amount_zscore_30d. Temporal: hour_of_day, day_of_week, is_weekend, days_since_last_txn, txn_frequency_1h. Velocity sender side: txn_count_1h_sender, txn_count_24h_sender, sum_amount_1h_sender, sum_amount_24h_sender. Velocity receiver side: txn_count_1h_receiver, txn_count_24h_receiver, sum_amount_1h_receiver. Agent Features: agent_txn_count_1h, agent_float_growth_3h, agent_cash_in_out_ratio_6h. Geographic: sender_counties_24h, receiver_counties_24h, sender_receiver_distance_km, is_same_county. Device/Channel: is_stk_push, is_b2c, is_p2p, is_agent_float, device_age_days, sim_match_status. MSISDN Features: account_age_days, wallet_tier_encoded, kyc_level_encoded, prev_fraud_flag_count_90d. CBK Compliance: amount_near_threshold (140k-150k binary), is_round_number_100k, daily_cumulative_remaining_pct. Interaction: amount_x_velocity, amount_x_account_age, threshold_proximity_x_velocity. Key engineered features: amount_near_threshold captures CBK structuring typology STRUC-001 to STRUC-005; daily_cumulative_remaining_pct tracks depletion of KES 500,000 daily cap; agent_cash_in_out_ratio_6h exceeding 4:1 flags Cuckoo Smurfing Risk; threshold_proximity_x_velocity is strongest single predictor of structuring behavior.",
+      "metadata": {
+        "source": "mpesa_fraud_xgboost_card.md",
+        "category": "ML_Model_Card",
+        "system_rail": "Fraud_Detection",
+        "version": "2026.2"
+      }
+    },
+    {
+      "id": "doc_xgb_model_003",
+      "document": "Feature importance and fairness for M-Pesa Fraud XGBoost model. Top 15 features by Gain: (1) threshold_proximity_x_velocity 0.142, (2) amount_near_threshold 0.118, (3) txn_frequency_1h 0.105, (4) log_amount 0.089, (5) daily_cumulative_remaining_pct 0.072, (6) agent_cash_in_out_ratio_6h 0.067, (7) txn_count_1h_sender 0.061, (8) account_age_days 0.055, (9) amount_x_velocity 0.048, (10) agg_velocity_12h 0.041, (11) sender_receiver_distance_km 0.035, (12) amount_percentile_7d 0.031, (13) wallet_tier_encoded 0.026, (14) prev_fraud_flag_count_90d 0.022, (15) is_round_number_100k 0.018. Fairness evaluation: Tier 1 Basic KYC shows elevated FNR of 0.302 vs 0.278 baseline (disparate impact ratio 1.58). Mitigation: per-tier score calibration (additive +0.03 for Tier 1 predictions). 92,000 Tier 1 accounts migrated to Tier 2 in Q1 2026. Rural counties show FNR 0.291 vs urban 0.282 (disparate impact ratio 1.18). Model monitoring: PSI 0.072 stable, AUC-ROC drift 0.011 stable, ECE 0.021 stable. Monthly full retrain schedule; hot retrain triggered if any alert threshold breached. Regulatory compliance mapping: amount>150k hard rule override, velocity warning via daily_cumulative_remaining_pct, structuring via amount_near_threshold + threshold_proximity_x_velocity, cuckoo smurfing via agent_cash_in_out_ratio_6h.",
+      "metadata": {
+        "source": "mpesa_fraud_xgboost_card.md",
+        "category": "ML_Model_Card",
+        "system_rail": "Fraud_Detection",
+        "version": "2026.2"
+      }
+    },
+    {
+      "id": "doc_shap_credit_001",
+      "document": "M-Pesa SHAP Credit Scoring model specification (sentinai_credit_shap_001, v1.2.0). Model: SHAP-driven XGBoost creditworthiness scorer for M-Pesa wallet holders targeting unbanked and underbanked segments in Kenya. Generates explainable credit risk scores for microloan origination (KES 1,000 to KES 200,000) with full regulatory explainability under CBK Credit Reference Bureau (CRB) guidelines. Development framework: XGBoost 2.0.3 with SHAP 0.45.0 TreeExplainer. Target variable: binary default indicator (1 if loan repayment >30 days overdue). Training period: January 2024 to December 2025. 24 features from M-Pesa transaction history across 5 categories: Cash Flow Stability (6 features including avg_monthly_income_6m, income_volatility_cv, min_monthly_balance_6m, savings_rate), Repayment History (5 features including fuliza_repayment_rate, loan_utilization_ratio, avg_days_to_repay, max_delinquency_days, credit_resurrection_count), Transaction Behavior (7 features including avg_txn_amount, merchant_diversity, airtime_to_cash_ratio, savings_group_indicators), Digital Footprint (3 features including wallet_age_days, sim_tenure, feature_phone_indicator), Social Graph (3 features including network_density, reciprocity_score, trusted_network_size). No traditional CRB data required.",
+      "metadata": {
+        "source": "mpesa_shap_credit_scoring.txt",
+        "category": "ML_Model_Card",
+        "system_rail": "Credit_Scoring",
+        "version": "2026.2"
+      }
+    },
+    {
+      "id": "doc_shap_credit_002",
+      "document": "SHAP Credit Scoring model architecture and performance. XGBoost hyperparameters: objective binary:logistic with asymmetric loss weight 3.0 for false negatives, 350 estimators, max depth 6, learning rate 0.03, scale pos weight 2.5, AUC-PR eval metric. SHAP explanation layer: TreeExplainer with exact SHAP values, expected baseline 0.072 (mean default probability), per-feature SHAP contribution values normalized to probability space. Holdout performance on 200,000 records (6.8% default rate): AUC-ROC 0.894, AUC-PR 0.672, KS Statistic 0.641, Brier Score 0.038. At optimized threshold 0.14: precision 0.537, recall 0.650, F1 0.588. Global SHAP feature importance (top 5): avg_monthly_income_6m (0.041, lower income = higher risk), fuliza_repayment_rate (0.038, lower repayment = higher risk), income_volatility_cv (0.032, higher volatility = higher risk), min_monthly_balance_6m (0.029, lower min balance = higher risk), avg_days_to_repay (0.026, longer avg repayment = higher risk). Top SHAP interaction: avg_monthly_income_6m x income_volatility_cv (strength 0.008). Scoring thresholds: >=0.14 DECLINE, 0.09 to 0.139 REFER for manual underwriting, <0.09 APPROVE.",
+      "metadata": {
+        "source": "mpesa_shap_credit_scoring.txt",
+        "category": "ML_Model_Card",
+        "system_rail": "Credit_Scoring",
+        "version": "2026.2"
+      }
+    },
+    {
+      "id": "doc_shap_credit_003",
+      "document": "SHAP Credit Scoring inference pipeline, fairness, and governance. Per-application output: base_value 0.072, f_x default probability, shap_values dict of 24 feature contributions, top_3_positive_factors and top_3_negative_factors with SHAP magnitudes, recommendation (APPROVE/REFER/DECLINE), up to 6 reason codes. Inference latency: feature extraction <200ms, XGBoost <5ms, SHAP TreeExplainer <50ms batch, end-to-end <300ms. CBK CRB compliance: no direct use of gender/ethnicity/religion/ politics verified via SHAP dependence testing, all 47 counties represented in training, SHAP satisfies right-to-explanation per CRB Section 12. Fairness: Tier 1 Basic KYC approval rate 52.1% with FN 12.4%; Tier 3 Full KYC approval rate 71.8% with FN 5.7%. Auto-upgrade: Tier 1 applicants with income stability (avg >KES 5,000 monthly, CV<0.3) elevated to Tier 2 equivalent scoring. Reason code mapping (6 negative, 6 positive): SHAP>0.02 on avg_monthly_income_6m maps to RC-001 insufficient income, fuliza_repayment_rate>0.02 maps to RC-002 overdraft not repaid, SHAP<-0.02 maps to positive codes RC-101 sufficient income through RC-106 long-standing mobile relationship. Governance: v1.2.0, last fairness audit 2026-03-15 (EY Kenya), next retrain 2026-08-01, MLflow production-locked requiring 2-party approval.",
+      "metadata": {
+        "source": "mpesa_shap_credit_scoring.txt",
+        "category": "ML_Model_Card",
+        "system_rail": "Credit_Scoring",
+        "version": "2026.2"
+      }
+    }
+  ]
+}

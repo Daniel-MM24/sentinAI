@@ -110,6 +110,21 @@ class SyntheticMpesaGenerator:
         user_balances = {f"user_{i}": balance for i, balance in enumerate(initial_balances)}
         user_ids = list(user_balances.keys())
 
+        # Generate deterministic, unique (tax_id, email) pairs per distinct customer entity
+        user_identities = {}
+        used_pairs = set()
+        email_domains = ["gmail.com", "yahoo.com", "hotmail.com", "outlook.com"]
+
+        for user_id in user_ids:
+            while True:
+                tax_id = f"TAX-{self._rng.integers(100000000, 999999999)}"
+                email = f"user_{self._rng.integers(1000, 9999)}@{self._rng.choice(email_domains)}"
+                pair = (tax_id, email)
+                if pair not in used_pairs:
+                    used_pairs.add(pair)
+                    user_identities[user_id] = {"tax_id": tax_id, "email": email}
+                    break
+
         # 2. Sample transaction types
         tx_types = list(self.params.transaction_type_probs.keys())
         tx_probs = list(self.params.transaction_type_probs.values())
@@ -142,7 +157,9 @@ class SyntheticMpesaGenerator:
                     "sender_id": sender,  # Pseudonymized for data minimization
                     "transaction_amount": round(float(amount), 2),
                     "timestamp": timestamps[i],
-                    "channel_type": channels[i]
+                    "channel_type": channels[i],
+                    "tax_id": user_identities[sender]["tax_id"],  # Enforces entity-grain integrity
+                    "email": user_identities[sender]["email"]     # Enforces entity-grain integrity
                 })
             else:
                 # If balance constraint fails, assign to a random user with sufficient balance
@@ -156,38 +173,15 @@ class SyntheticMpesaGenerator:
                         "sender_id": sender,
                         "transaction_amount": round(float(amount), 2),
                         "timestamp": timestamps[i],
-                        "channel_type": channels[i]
+                        "channel_type": channels[i],
+                        "tax_id": user_identities[sender]["tax_id"],  # Enforces entity-grain integrity
+                        "email": user_identities[sender]["email"]     # Enforces entity-grain integrity
                     })
 
         # Audit trail logging
         logger.info(f"Generated {len(valid_records)} valid synthetic records out of {n_records} attempted.")
         logger.info(f"Audit Trail - Seed: {self.params.seed}, Model Version: {self.params.model_version}")
 
-        # Construct Polars DataFrame with valid tax_id and email for compliance
-        # CRITICAL FIX: Generate unique (tax_id, email) pairs to prevent deduplication loss in Silver layer
-        # The Silver layer performs exact-match deduplication on (tax_id, email), so we must ensure uniqueness
-        tax_ids = []
-        email_domains = ["gmail.com", "yahoo.com", "hotmail.com", "outlook.com"]
-        emails = []
-        used_pairs = set()  # Track used (tax_id, email) combinations
-        
-        for _ in range(len(valid_records)):
-            # Generate unique tax_id and email combinations
-            while True:
-                tax_id = f"TAX-{self._rng.integers(100000000, 999999999)}"
-                email = f"user_{self._rng.integers(1000, 9999)}@{self._rng.choice(email_domains)}"
-                pair = (tax_id, email)
-                if pair not in used_pairs:
-                    used_pairs.add(pair)
-                    tax_ids.append(tax_id)
-                    emails.append(email)
-                    break
-        
-        # Add tax_id and email to valid records
-        for i, record in enumerate(valid_records):
-            record["tax_id"] = tax_ids[i]
-            record["email"] = emails[i]
-        
         df = pl.DataFrame(valid_records)
         
         # Persist to DuckDB to avoid expensive regenerations
@@ -199,7 +193,7 @@ class SyntheticMpesaGenerator:
             # Create table if not exists based on schema, then insert data
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS synthetic_transactions "
-                "(transaction_id VARCHAR, sender_id VARCHAR, transaction_amount DOUBLE, timestamp TIMESTAMP, channel_type VARCHAR)"
+                "(transaction_id VARCHAR, sender_id VARCHAR, transaction_amount DOUBLE, timestamp TIMESTAMP, channel_type VARCHAR, tax_id VARCHAR, email VARCHAR)"
             )
             # Convert to pandas for safer DuckDB insertion (compatibility fix)
             import pandas as pd
@@ -207,13 +201,15 @@ class SyntheticMpesaGenerator:
             # Insert data using pandas conversion
             for _, row in pdf.iterrows():
                 conn.execute(
-                    "INSERT INTO synthetic_transactions VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO synthetic_transactions VALUES (?, ?, ?, ?, ?, ?, ?)",
                     [
                         str(row['transaction_id']),
                         str(row['sender_id']),
                         float(row['transaction_amount']),
                         str(row['timestamp']),
-                        str(row['channel_type'])
+                        str(row['channel_type']),
+                        str(row['tax_id']),
+                        str(row['email'])
                     ]
                 )
             
@@ -262,15 +258,10 @@ class SyntheticMpesaGenerator:
             "channel_type": "currency"
         })
         
-        # Add missing required fields for Bronze schema
-        # Generate valid tax_id values for compliance
-        tax_ids = [f"TAX-{self._rng.integers(100000000, 999999999)}" for _ in range(len(bronze_df))]
-        email_domains = ["gmail.com", "yahoo.com", "hotmail.com", "outlook.com"]
-        emails = [f"user_{self._rng.integers(1000, 9999)}@{self._rng.choice(email_domains)}" for _ in range(len(bronze_df))]
-        
+        # Preserve deterministic tax_id and email from synthetic_df to maintain entity-grain integrity
         bronze_df = bronze_df.with_columns([
-            pl.Series(emails).alias("email"),
-            pl.Series(tax_ids).alias("tax_id"),
+            pl.col("tax_id"),
+            pl.col("email"),
             pl.col("timestamp").alias("timestamp")
         ])
         

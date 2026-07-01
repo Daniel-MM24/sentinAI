@@ -4,11 +4,14 @@ from typing import Dict, List, Optional, Any
 from collections import defaultdict
 import math
 import numpy as np
-from sentence_transformers import CrossEncoder
 import chromadb
 from chromadb.config import Settings
+from datetime import datetime, timezone
+import uuid
 
 from src.retrieval.schemas import SearchResult, ChunkMetadata
+from openlineage.client import OpenLineageClient
+from openlineage.client.run import RunEvent, RunState, Run, Job, Dataset
 
 logger = logging.getLogger(__name__)
 
@@ -96,14 +99,28 @@ class BM25Engine:
         return results
 
 class CrossEncoderReranker:
-    """Real Cross-Encoder Reranker using sentence-transformers."""
-    def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
-        self.model = CrossEncoder(model_name)
+    """Cross-Encoder Reranker - disabled when using OpenRouter."""
+    def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2", enabled: bool = False):
+        self.enabled = enabled
+        self.model_name = model_name
+        if enabled:
+            try:
+                from sentence_transformers import CrossEncoder
+                self.model = CrossEncoder(model_name)
+            except ImportError:
+                logger.warning("sentence-transformers not available, reranking disabled")
+                self.enabled = False
         
     async def rerank(self, query: str, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Rerank documents using cross-encoder model."""
+        """Rerank documents using cross-encoder model if enabled, otherwise return as-is."""
         if not documents:
             return []
+            
+        if not self.enabled:
+            # Return documents with default confidence scores
+            for doc in documents:
+                doc['confidence_score'] = 0.5
+            return documents
             
         # Prepare query-document pairs
         pairs = [[query, doc['content']] for doc in documents]
@@ -128,49 +145,158 @@ class VectorStore:
         self, 
         persist_directory: str = "./chroma_data", 
         collection_name: str = "sentinai_docs",
-        cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        use_persistent_client: bool = True
     ):
         """
         Designed for persistence in a distributed environment.
         ChromaDB is used here, but can be swapped with Pinecone via similar interfaces.
+        
+        Args:
+            persist_directory: Directory for ChromaDB persistent storage
+            collection_name: Name of the collection
+            cross_encoder_model: Model name for cross-encoder reranker
+            use_persistent_client: If True, uses PersistentClient for local-only mode.
+                                   If False, uses AsyncHttpClient for server mode.
         """
-        self.client = chromadb.AsyncHttpClient(
-            host="localhost",
-            port=8000,
-            settings=Settings(allow_reset=True)
-        )
+        if use_persistent_client:
+            # Use persistent client for local-only mode (no server required)
+            self.client = chromadb.PersistentClient(
+                path=persist_directory,
+                settings=Settings(allow_reset=True)
+            )
+        else:
+            # Use async HTTP client for server mode
+            self.client = chromadb.AsyncHttpClient(
+                host="localhost",
+                port=8000,
+                settings=Settings(allow_reset=True)
+            )
         self.collection_name = collection_name
         self.sparse_search = BM25Engine()
-        self.reranker = CrossEncoderReranker(model_name=cross_encoder_model)
+        self.reranker = CrossEncoderReranker(model_name=cross_encoder_model, enabled=False)
         self._indexed = False
+        self.use_persistent_client = use_persistent_client
+        
+        # Initialize OpenLineage client for vector store operations
+        self.ol_client = OpenLineageClient()
+        self.namespace = "sentinai.retrieval"
+        self.job_name = "vector_store_operations"
         
     async def get_collection(self):
-        # Fallback to get_or_create_collection using AsyncHttpClient
-        return await self.client.get_or_create_collection(name=self.collection_name)
+        # Handle both PersistentClient (sync) and AsyncHttpClient (async)
+        if self.use_persistent_client:
+            # PersistentClient is synchronous, wrap in executor
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(
+                None,
+                self.client.get_or_create_collection,
+                self.collection_name
+            )
+        else:
+            # AsyncHttpClient is asynchronous
+            return await self.client.get_or_create_collection(name=self.collection_name)
 
     async def add_documents(self, documents: List[Dict[str, Any]]):
         """
         Add documents to both ChromaDB and BM25 index.
         """
-        collection = await self.get_collection()
+        run_id = str(uuid.uuid4())
         
+        # Emit START event for document ingestion
+        try:
+            start_event = RunEvent(
+                eventType=RunState.START,
+                eventTime=datetime.now(timezone.utc).isoformat(),
+                run=Run(runId=run_id),
+                job=Job(namespace=self.namespace, name=f"{self.job_name}_add_documents"),
+                producer="sentinai",
+                inputs=[],
+                outputs=[]
+            )
+            self.ol_client.emit(start_event)
+            logger.info(f"Lineage START emitted: vector_store_add_documents (run_id={run_id})")
+        except Exception as e:
+            logger.warning(f"Failed to emit START event: {e}")
+        
+        collection = await self.get_collection()
+
         # Prepare documents for ChromaDB
         ids = [doc.get('id', str(i)) for i, doc in enumerate(documents)]
         texts = [doc['content'] for doc in documents]
-        metadatas = [doc.get('metadata', {}) for doc in documents]
-        
+
+        # Filter metadata to remove None values (ChromaDB doesn't accept None)
+        metadatas = []
+        for doc in documents:
+            meta = doc.get('metadata', {})
+            filtered_meta = {k: v for k, v in meta.items() if v is not None}
+            metadatas.append(filtered_meta)
+
+        # Extract embeddings if provided
+        embeddings = [doc.get('embedding') for doc in documents if doc.get('embedding')]
+        # If all documents have embeddings, use them; otherwise let ChromaDB generate them
+        use_embeddings = len(embeddings) == len(documents)
+
         # Add to ChromaDB
-        await collection.add(
-            ids=ids,
-            documents=texts,
-            metadatas=metadatas
-        )
+        if self.use_persistent_client:
+            # PersistentClient is synchronous
+            loop = asyncio.get_event_loop()
+            if use_embeddings:
+                await loop.run_in_executor(
+                    None,
+                    lambda: collection.add(
+                        ids=ids,
+                        documents=texts,
+                        metadatas=metadatas,
+                        embeddings=embeddings
+                    )
+                )
+            else:
+                await loop.run_in_executor(
+                    None,
+                    lambda: collection.add(
+                        ids=ids,
+                        documents=texts,
+                        metadatas=metadatas
+                    )
+                )
+        else:
+            # AsyncHttpClient is asynchronous
+            if use_embeddings:
+                await collection.add(
+                    ids=ids,
+                    documents=texts,
+                    metadatas=metadatas,
+                    embeddings=embeddings
+                )
+            else:
+                await collection.add(
+                    ids=ids,
+                    documents=texts,
+                    metadatas=metadatas
+                )
         
         # Index for BM25
         self.sparse_search.index_documents(documents)
         self._indexed = True
         
         logger.info(f"Added {len(documents)} documents to vector store")
+        
+        # Emit COMPLETE event for document ingestion
+        try:
+            complete_event = RunEvent(
+                eventType=RunState.COMPLETE,
+                eventTime=datetime.now(timezone.utc).isoformat(),
+                run=Run(runId=run_id),
+                job=Job(namespace=self.namespace, name=f"{self.job_name}_add_documents"),
+                producer="sentinai",
+                inputs=[],
+                outputs=[Dataset(namespace=self.namespace, name=self.collection_name)]
+            )
+            self.ol_client.emit(complete_event)
+            logger.info(f"Lineage COMPLETE emitted: vector_store_add_documents (run_id={run_id})")
+        except Exception as e:
+            logger.warning(f"Failed to emit COMPLETE event: {e}")
         
     async def hybrid_search(self, query: str, filters: Optional[Dict] = None, k: int = 5) -> List[SearchResult]:
         """
@@ -183,11 +309,23 @@ class VectorStore:
         
         # 2. Vector Search (Dense)
         # Assuming embedding function is handled by Chroma or passed explicitly.
-        dense_response = await collection.query(
-            query_texts=[query],
-            n_results=k,
-            where=filters
-        )
+        if self.use_persistent_client:
+            # PersistentClient is synchronous
+            loop = asyncio.get_event_loop()
+            dense_response = await loop.run_in_executor(
+                None,
+                collection.query,
+                query_texts=[query],
+                n_results=k,
+                where=None  # where parameter
+            )
+        else:
+            # AsyncHttpClient is asynchronous
+            dense_response = await collection.query(
+                query_texts=[query],
+                n_results=k,
+                where=filters
+            )
         
         dense_results = []
         if dense_response and dense_response['documents'] and len(dense_response['documents']) > 0:

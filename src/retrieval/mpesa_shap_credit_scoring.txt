@@ -1,0 +1,202 @@
+M-Pesa SHAP Credit Scoring — Model Specification
+
+1. OVERVIEW
+
+Model Name: sentinai_credit_shap_001
+Model Type: SHAP-driven XGBoost creditworthiness scorer
+Purpose: Generate explainable credit risk scores for M-Pesa wallet holders (unbanked and underbanked segments in Kenya) using alternative transaction data. Scores support microloan origination (KES 1,000–KES 200,000) with full regulatory explainability under CBK Credit Reference Bureau (CRB) guidelines.
+
+Development Framework: XGBoost 2.0.3 with SHAP 0.45.0 explainability layer
+Target Variable: Binary default indicator (1 if loan repayment >30 days overdue)
+Training Period: January 2024 – December 2025
+Jurisdiction: Kenya (KE)
+
+2. MODEL INPUTS — ALTERNATIVE CREDIT FEATURES
+
+All features derived exclusively from M-Pesa transaction history (no traditional CRB data required):
+
+Category 1 — Cash Flow Stability (6 features)
+- avg_monthly_income_6m: Mean incoming P2P and deposit volume over 6 months (KES)
+- income_volatility_cv: Coefficient of variation of monthly income (lower = more stable)
+- min_monthly_balance_6m: Lowest end-of-month wallet balance over 6 months (KES)
+- savings_rate: Ratio of end-of-month balance to total incoming flows
+- income_growth_trend: Linear regression slope of monthly income over 6 months
+- txn_regularity_score: Standard deviation of inter-transaction intervals (inverse)
+
+Category 2 — Repayment History (5 features, proxy behavior)
+- fuliza_repayment_rate: Proportion of Fuliza (M-Pesa overdraft) advances fully repaid within due date
+- loan_utilization_ratio: Total loan amount drawn / total loan limit approved
+- avg_days_to_repay: Mean repayment lag for Fuliza and previously disbursed loans
+- max_delinquency_days: Longest observed delinquency period in days
+- credit_resurrection_count: Number of times account returned to good standing after delinquency
+
+Category 3 — Transaction Behavior (7 features)
+- avg_txn_amount: Mean transaction value over 90 days (KES)
+- txn_frequency_per_day: Mean number of transactions per day
+- merchant_diversity: Number of unique merchant categories transacted with in 90 days
+- airtime_to_cash_ratio: Ratio of airtime purchases to cash withdrawals (low ratio = liquidity constrained)
+- savings_group_indicators: Frequency and volume of group/chama contribution transactions
+- international_remittance_inflow: Proportion of income from international remittance (KES)
+- utility_payment_regularity: Standard deviation of utility bill payment intervals
+
+Category 4 — Digital Footprint (3 features)
+- wallet_age_days: Days since first M-Pesa registration
+- sim_tenure: Months with same SIM registration
+- feature_phone_indicator: 1 if primary device is feature phone, 0 if smartphone
+
+Category 5 — Social Graph (3 features derived from transaction network)
+- network_density: Number of unique counterparties transacted with per month
+- reciprocity_score: Ratio of incoming to outgoing P2P transactions (near 1.0 = balanced)
+- trusted_network_size: Number of counterparties with >6 months of continuous transaction history
+
+Total: 24 features
+
+3. MODEL ARCHITECTURE AND HYPERPARAMETERS
+
+Primary model: XGBoost Classifier (probability calibration via Platt scaling)
+Base: XGBoost 2.0.3 with custom asymmetric loss function (false negative cost = 3x false positive cost)
+
+Hyperparameters:
+- objective: binary:logistic (with custom asymmetric loss weight = 3.0 for FN)
+- n_estimators: 350
+- max_depth: 6
+- learning_rate: 0.03
+- subsample: 0.75
+- colsample_bytree: 0.65
+- min_child_weight: 8
+- gamma: 0.2
+- reg_lambda: 2.0
+- reg_alpha: 1.0
+- scale_pos_weight: 2.5
+- eval_metric: AUC-PR
+- early_stopping_rounds: 50
+
+SHAP explainability layer:
+- TreeExplainer (exact SHAP values, not interventional)
+- Expected value (baseline): 0.072 (mean default probability in population)
+- Output: per-feature SHAP contribution values normalized to probability space
+
+4. PERFORMANCE METRICS
+
+Holdout test set (200,000 records, 6.8% default rate):
+
+| Metric | Value |
+|--------|-------|
+| AUC-ROC | 0.894 |
+| AUC-PR | 0.672 |
+| KS Statistic | 0.641 |
+| Brier Score | 0.038 |
+| Precision (top decile) | 0.451 |
+| Recall (top decile) | 0.662 |
+| Precision (top quintile) | 0.312 |
+| Recall (top quintile) | 0.847 |
+
+Confusion matrix at optimized threshold (0.14 probability):
+|                | Predicted Good | Predicted Default |
+|----------------|---------------|-------------------|
+| Actual Good    | 172,380       | 7,620             |
+| Actual Default | 4,760         | 8,840             |
+
+Precision: 0.537  Recall: 0.650  F1: 0.588
+
+5. SHAP FEATURE IMPORTANCE (GLOBAL)
+
+Top 10 features by mean absolute SHAP value:
+
+Rank  Feature                              Mean |SHAP|  Direction of Risk
+1     avg_monthly_income_6m                0.041  Lower income = higher default risk
+2     fuliza_repayment_rate                0.038  Lower repayment = higher risk
+3     income_volatility_cv                  0.032  Higher volatility = higher risk
+4     min_monthly_balance_6m               0.029  Lower min balance = higher risk
+5     avg_days_to_repay                    0.026  Longer avg repayment = higher risk
+6     max_delinquency_days                 0.024  Higher max delinquency = higher risk
+7     savings_rate                         0.021  Lower savings = higher risk
+8     txn_regularity_score                 0.018  Less regular txns = higher risk
+9     merchant_diversity                    0.015  Less diverse = higher risk
+10    savings_group_indicators             0.013  Fewer group txns = higher risk
+
+Top 5 SHAP interaction effects:
+1. avg_monthly_income_6m x income_volatility_cv (interaction strength: 0.008)
+2. fuliza_repayment_rate x max_delinquency_days (interaction strength: 0.007)
+3. savings_rate x avg_monthly_income_6m (interaction strength: 0.005)
+4. wallet_age_days x merchant_diversity (interaction strength: 0.004)
+5. reciprocity_score x network_density (interaction strength: 0.003)
+
+6. SHAP EXPLANABILITY — PER-APPLICATION OUTPUT
+
+Every credit application is output with:
+- base_value: 0.072 (population baseline default probability)
+- f_x: Final model score (default probability in range 0.0–1.0)
+- shap_values: Dict of 24 feature -> contribution value
+- top_3_positive_factors: The 3 features driving score upward (toward approval) with their SHAP magnitudes
+- top_3_negative_factors: The 3 features driving score downward (toward rejection) with their SHAP magnitudes
+- recommendation: APPROVE / REFER / DECLINE based on threshold
+- reason_codes: Regulatory-friendly reason codes mapped from SHAP (6 max)
+
+Threshold structure:
+- >=0.14: DECLINE (high default probability)
+- 0.09–0.139: REFER (manual underwriting review)
+- <0.09: APPROVE
+
+7. PRODUCTION DEPLOYMENT
+
+Inference pipeline:
+1. Feature extraction from M-Pesa transaction log (90-day lookback)
+2. Preprocessing: missing value imputation (median for continuous, mode for categorical), z-score normalization using training set parameters
+3. XGBoost inference: predict_proba -> default probability
+4. SHAP TreeExplainer: compute 24 SHAP values per application (batch = 1000, cached explainer)
+5. Post-processing: Map SHAP values to reason codes, generate recommendation, log to audit store
+6. API response: Return score + SHAP explanation + reason codes in JSON
+
+Latency budget:
+- Feature extraction: <200ms per application
+- XGBoost inference: <5ms per application
+- SHAP TreeExplainer: <50ms per application (batch)
+- End-to-end: <300ms
+
+8. FAIRNESS AND REGULATORY COMPLIANCE
+
+CBK Credit Reference Bureau Guidelines compliance:
+- No direct use of gender, ethnicity, religion, or political affiliation (verified via SHAP dependence testing)
+- No geographic redlining: 47 counties equally represented in training data
+- Alternative data must be explainable: SHAP satisfies CBK right-to-explanation requirement (CRB regulations Section 12)
+
+Fairness metrics across demographic proxies:
+| Segment       | Approval Rate | False Positive (approved bad) | False Negative (declined good) |
+|---------------|--------------|------------------------------|-------------------------------|
+| Tier 1 (Basic)| 52.1%        | 7.8%                          | 12.4%                         |
+| Tier 2        | 62.4%        | 6.2%                          | 8.9%                          |
+| Tier 3        | 71.8%        | 4.9%                          | 5.7%                          |
+| Tier 4        | 78.2%        | 3.8%                          | 4.1%                          |
+
+Mitigation: Tier 1 applicants with SHAP-driven explanations showing income stability (>KES 5,000 avg monthly income, <0.3 income volatility CV) are auto-upgraded to Tier 2 equivalent scoring.
+
+9. MODEL GOVERNANCE
+
+- Version: 1.2.0
+- Training data freeze date: 2025-12-31
+- Validation period: 2026-01-01 to 2026-02-28
+- Last fairness audit: 2026-03-15 (external auditor: Ernst & Young Kenya)
+- Next scheduled retrain: 2026-08-01
+- Model registry: SentinAI MLflow registry (production-locked, requires 2-party approval for updates)
+- DR plan: Shadow-mode inference on 5% of production traffic; fallback to rule-based credit scoring (income >KES 10,000/month + fuliza repaid = APPROVE)
+
+10. APPENDIX: REASON CODE MAPPING
+
+SHAP value range -> Reason code -> Description (CBK-compliant):
+
+SHAP value >0.02 on avg_monthly_income_6m   -> RC-001  -> Insufficient average monthly income
+SHAP value >0.02 on fuliza_repayment_rate   -> RC-002  -> Prior overdraft not consistently repaid
+SHAP value >0.02 on income_volatility_cv     -> RC-003  -> Irregular income pattern
+SHAP value >0.02 on min_monthly_balance_6m  -> RC-004  -> Low maintained wallet balance
+SHAP value >0.02 on max_delinquency_days    -> RC-005  -> History of extended repayment delays
+SHAP value >0.01 on savings_rate             -> RC-006  -> Low savings relative to income
+
+SHAP value <-0.02 on avg_monthly_income_6m   -> RC-101  -> Sufficient average monthly income
+SHAP value <-0.02 on fuliza_repayment_rate   -> RC-102  -> Reliable overdraft repayment history
+SHAP value <-0.02 on savings_rate            -> RC-103  -> Good savings discipline
+SHAP value <-0.02 on merchant_diversity      -> RC-104  -> Diverse transaction patterns
+SHAP value <-0.02 on txn_regularity_score    -> RC-105  -> Regular transaction behavior
+SHAP value <-0.02 on wallet_age_days         -> RC-106  -> Long-standing mobile money relationship
+
+-- End of model specification --

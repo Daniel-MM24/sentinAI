@@ -34,6 +34,30 @@ agents:
       X-Title: "SentinAI-Analyst"
       HTTP-Referer: "https://github.com/Daniel-MM24/sentinai"
 
+  compliance_router:
+    model: "anthropic/claude-3.5-sonnet"
+    temperature: 0.0
+    use_openrouter: true
+    openrouter_headers:
+      X-Title: "SentinAI-ComplianceRouter"
+      HTTP-Referer: "https://github.com/Daniel-MM24/sentinai"
+
+  high_reasoning_evaluator:
+    model: "openai/gpt-oss-120b"
+    temperature: 0.0
+    use_openrouter: true
+    openrouter_headers:
+      X-Title: "SentinAI-HighReasoningEvaluator"
+      HTTP-Referer: "https://github.com/Daniel-MM24/sentinai"
+
+  extraction_worker:
+    model: "deepseek/deepseek-v4-flash"
+    temperature: 0.0
+    use_openrouter: true
+    openrouter_headers:
+      X-Title: "SentinAI-ExtractionWorker"
+      HTTP-Referer: "https://github.com/Daniel-MM24/sentinai"
+
 # Alternative model configurations for different use cases
 alternatives:
   high_performance:

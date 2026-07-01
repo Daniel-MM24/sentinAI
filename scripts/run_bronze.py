@@ -3,12 +3,15 @@ import sys
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
+import uuid
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.data.bronze import BronzeLayer
 from src.data.synthetic_engine import SyntheticMpesaGenerator
+from openlineage.client import OpenLineageClient
+from openlineage.client.run import RunEvent, RunState, Run, Job, Dataset
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,6 +21,28 @@ logger = logging.getLogger(__name__)
 
 def main():
     logger.info("Starting Bronze Layer Ingestion")
+    
+    # Initialize OpenLineage client
+    ol_client = OpenLineageClient()
+    run_id = str(uuid.uuid4())
+    namespace = "sentinai.bronze"
+    job_name = "bronze_ingest_script"
+    
+    # Emit START event
+    try:
+        start_event = RunEvent(
+            eventType=RunState.START,
+            eventTime=datetime.now(timezone.utc).isoformat(),
+            run=Run(runId=run_id),
+            job=Job(namespace=namespace, name=job_name),
+            producer="sentinai",
+            inputs=[],
+            outputs=[]
+        )
+        ol_client.emit(start_event)
+        logger.info(f"Lineage START emitted: {job_name} (run_id={run_id})")
+    except Exception as e:
+        logger.warning(f"Failed to emit START event: {e}")
     
     try:
         bronze_layer = BronzeLayer(bronze_base_path="data/bronze")
@@ -58,7 +83,39 @@ def main():
         logger.info(f"Bronze data written to: {bronze_path}")
         logger.info("Bronze Layer Ingestion successfully completed.")
         
+        # Emit COMPLETE event
+        try:
+            complete_event = RunEvent(
+                eventType=RunState.COMPLETE,
+                eventTime=datetime.now(timezone.utc).isoformat(),
+                run=Run(runId=run_id),
+                job=Job(namespace=namespace, name=job_name),
+                producer="sentinai",
+                inputs=[],
+                outputs=[Dataset(namespace=namespace, name="bronze_transactions")]
+            )
+            ol_client.emit(complete_event)
+            logger.info(f"Lineage COMPLETE emitted: {job_name} (run_id={run_id})")
+        except Exception as e:
+            logger.warning(f"Failed to emit COMPLETE event: {e}")
+        
     except Exception as e:
+        # Emit FAIL event
+        try:
+            fail_event = RunEvent(
+                eventType=RunState.FAIL,
+                eventTime=datetime.now(timezone.utc).isoformat(),
+                run=Run(runId=run_id),
+                job=Job(namespace=namespace, name=job_name),
+                producer="sentinai",
+                inputs=[],
+                outputs=[]
+            )
+            ol_client.emit(fail_event)
+            logger.info(f"Lineage FAIL emitted: {job_name} (run_id={run_id})")
+        except Exception as lineage_error:
+            logger.warning(f"Failed to emit FAIL event: {lineage_error}")
+        
         logger.error(f"Bronze Layer failed: {e}")
         sys.exit(1)
 

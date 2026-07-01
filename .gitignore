@@ -140,4 +140,12 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# Obsidian notes and brain map
+obsidian_notes
+.obsidian
 
+# configurations
+config/agents/openrouter_models.yaml
+
+# documentation
+docs

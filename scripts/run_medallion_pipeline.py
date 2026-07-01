@@ -11,9 +11,14 @@ import sys
 import logging
 import subprocess
 from pathlib import Path
+from datetime import datetime, timezone
+import uuid
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from openlineage.client import OpenLineageClient
+from openlineage.client.run import RunEvent, RunState, Run, Job, Dataset
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,6 +57,28 @@ def run_complete_pipeline():
     logger.info("Starting Orchestration: Medallion Pipeline (Bronze → Silver → Gold)")
     logger.info("=" * 60)
     
+    # Initialize OpenLineage client for pipeline-level tracking
+    ol_client = OpenLineageClient()
+    run_id = str(uuid.uuid4())
+    namespace = "sentinai.pipeline"
+    job_name = "medallion_pipeline_orchestration"
+    
+    # Emit START event for pipeline orchestration
+    try:
+        start_event = RunEvent(
+            eventType=RunState.START,
+            eventTime=datetime.now(timezone.utc).isoformat(),
+            run=Run(runId=run_id),
+            job=Job(namespace=namespace, name=job_name),
+            producer="sentinai",
+            inputs=[],
+            outputs=[]
+        )
+        ol_client.emit(start_event)
+        logger.info(f"Pipeline Lineage START emitted: {job_name} (run_id={run_id})")
+    except Exception as e:
+        logger.warning(f"Failed to emit pipeline START event: {e}")
+    
     # Check OpenLineage configuration
     openlineage_url = os.getenv("OPENLINEAGE_URL")
     if openlineage_url:
@@ -70,15 +97,57 @@ def run_complete_pipeline():
     ]
     
     # Execute stages sequentially
+    pipeline_success = True
     for stage_name, script_path in stages:
         if not run_script(str(script_path), stage_name):
             logger.error(f"Pipeline halted at {stage_name} due to errors.")
-            sys.exit(1)
+            pipeline_success = False
+            break
             
-    logger.info("=" * 60)
-    logger.info("PIPELINE COMPLETED SUCCESSFULLY")
-    logger.info("Data for all layers persisted in data/ directory.")
-    logger.info("=" * 60)
+    if pipeline_success:
+        logger.info("=" * 60)
+        logger.info("PIPELINE COMPLETED SUCCESSFULLY")
+        logger.info("Data for all layers persisted in data/ directory.")
+        logger.info("=" * 60)
+        
+        # Emit COMPLETE event for pipeline orchestration
+        try:
+            complete_event = RunEvent(
+                eventType=RunState.COMPLETE,
+                eventTime=datetime.now(timezone.utc).isoformat(),
+                run=Run(runId=run_id),
+                job=Job(namespace=namespace, name=job_name),
+                producer="sentinai",
+                inputs=[],
+                outputs=[
+                    Dataset(namespace="sentinai.bronze", name="bronze_transactions"),
+                    Dataset(namespace="sentinai.silver", name="silver_transactions"),
+                    Dataset(namespace="sentinai.silver", name="silver_customers"),
+                    Dataset(namespace="sentinai.gold", name="gold_feature_store")
+                ]
+            )
+            ol_client.emit(complete_event)
+            logger.info(f"Pipeline Lineage COMPLETE emitted: {job_name} (run_id={run_id})")
+        except Exception as e:
+            logger.warning(f"Failed to emit pipeline COMPLETE event: {e}")
+    else:
+        # Emit FAIL event for pipeline orchestration
+        try:
+            fail_event = RunEvent(
+                eventType=RunState.FAIL,
+                eventTime=datetime.now(timezone.utc).isoformat(),
+                run=Run(runId=run_id),
+                job=Job(namespace=namespace, name=job_name),
+                producer="sentinai",
+                inputs=[],
+                outputs=[]
+            )
+            ol_client.emit(fail_event)
+            logger.info(f"Pipeline Lineage FAIL emitted: {job_name} (run_id={run_id})")
+        except Exception as e:
+            logger.warning(f"Failed to emit pipeline FAIL event: {e}")
+        
+        sys.exit(1)
     
     if openlineage_url:
         logger.info(f"View lineage DAG in Marquez UI: http://localhost:3001")
