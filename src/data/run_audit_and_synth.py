@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 
 # Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -15,8 +15,7 @@ logger = logging.getLogger(__name__)
 
 def run_subprocess(script_path: str):
     logger.info(f"Executing decoupled script: {script_path}")
-    project_root = str(Path(__file__).parent.parent)
-    result = subprocess.run([sys.executable, script_path], capture_output=True, text=True, cwd=project_root)
+    result = subprocess.run([sys.executable, script_path], capture_output=True, text=True)
     if result.returncode != 0:
         logger.error(f"Script {script_path} failed with exit code {result.returncode}")
         logger.error(f"STDOUT:\n{result.stdout}")

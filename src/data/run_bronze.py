@@ -5,8 +5,8 @@ from pathlib import Path
 from datetime import datetime, timezone
 import uuid
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add project root to path (adjusted for src/data)
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.data.bronze import BronzeLayer
 from src.data.synthetic_engine import SyntheticMpesaGenerator
@@ -64,7 +64,7 @@ def main():
             }
         )
         
-        synthetic_data = generator.generate_batch(n_records=1000000, num_users=50000)
+        synthetic_data = generator.generate_batch(n_records=10000, num_users=2000)
         logger.info(f"Generated {synthetic_data.height} synthetic records")
         
         partition_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")

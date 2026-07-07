@@ -268,6 +268,16 @@ class SilverLayer:
             "currency",
             "amount",
             "timestamp",
+            "receiver_id",
+            "sender_county",
+            "receiver_county",
+            "device_age_days",
+            "sim_match_status",
+            "wallet_tier_encoded",
+            "kyc_level_encoded",
+            "prev_fraud_flag_count_90d",
+            "anomaly_flag",
+            "anomaly_type"
         ]
         for col in base_cols:
             if col not in df.columns:
@@ -282,13 +292,19 @@ class SilverLayer:
             ]
         )
 
-        # Standardize timestamps: coerce strings to UTC datetimes
-        if df.schema.get("timestamp") in [pl.String, pl.Utf8]:
+        # Standardize timestamps: coerce strings to UTC datetimes, or set timezone for naive datetimes
+        timestamp_type = df.schema.get("timestamp")
+        if timestamp_type in [pl.String, pl.Utf8]:
             df = df.with_columns(
                 pl.col("timestamp")
                 .str.to_datetime(time_zone="UTC", strict=False)
                 .alias("timestamp")
             )
+        elif isinstance(timestamp_type, pl.Datetime):
+            if timestamp_type.time_zone != "UTC":
+                df = df.with_columns(
+                    pl.col("timestamp").dt.replace_time_zone("UTC")
+                )
 
         # Validate schema via Pandera (with relaxed validation to prevent data loss)
         try:

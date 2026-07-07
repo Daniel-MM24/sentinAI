@@ -11,6 +11,8 @@ from openlineage.client.run import RunEvent, RunState, Dataset
 
 from src.datasets.registry import FeatureRegistry
 from src.data.lineage_decorator import lineage_trace, emit_transformation_metadata
+from src.data.anomaly_engine import finalize_and_partition_gold
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +65,14 @@ class GoldLayer:
 
             # Ensure timestamp is datetime type
             if "timestamp" in feature_df.columns:
-                if feature_df.schema["timestamp"] == pl.String:
+                timestamp_type = feature_df.schema["timestamp"]
+                if timestamp_type == pl.String:
                     feature_df = feature_df.with_columns(
                         pl.col("timestamp").str.to_datetime(time_zone="UTC").alias("timestamp")
+                    )
+                elif isinstance(timestamp_type, pl.Datetime) and timestamp_type.time_zone != "UTC":
+                    feature_df = feature_df.with_columns(
+                        pl.col("timestamp").dt.replace_time_zone("UTC").alias("timestamp")
                     )
             else:
                 feature_df = feature_df.with_columns(
@@ -83,6 +90,21 @@ class GoldLayer:
                 pl.col("timestamp").dt.day().cast(pl.Int64).alias("day_of_month"),
                 pl.col("timestamp").dt.weekday().cast(pl.Int64).alias("day_of_week"),
                 pl.col("timestamp").dt.hour().cast(pl.Int64).alias("hour_of_day"),
+                # Base model card features
+                (pl.col("timestamp").dt.weekday() >= 5).cast(pl.Boolean).alias("is_weekend"),
+                pl.col("amount").log1p().alias("log_amount"),
+                pl.col("anomaly_type").alias("anomaly_case_id")
+            )
+            
+            # Key Engineered Features from Model Card
+            feature_df = feature_df.with_columns(
+                # amount_near_threshold (1 if amount is KES 140,000–149,999)
+                ((pl.col("amount") >= 140000) & (pl.col("amount") < 150000)).cast(pl.Int64).alias("amount_near_threshold"),
+                # is_round_number_100k
+                ((pl.col("amount") % 100000 == 0) & (pl.col("amount") > 0)).cast(pl.Int64).alias("is_round_number_100k"),
+                # Channel type flags
+                (pl.col("currency") == "C2B").cast(pl.Int64).alias("is_stk_push"),
+                (pl.col("currency") == "B2C").cast(pl.Int64).alias("is_b2c")
             )
 
             # Calculate transaction velocity (transactions per customer)
@@ -154,9 +176,8 @@ class GoldLayer:
             # Return the local path for the materialized dataset
             output_uri = local_dir
             
-            # Write parquet file
-            output_file = os.path.join(local_dir, "features.parquet")
-            feature_df.write_parquet(output_file, use_pyarrow=True)
+            # Write partitioned dataset
+            finalize_and_partition_gold(feature_df, local_dir)
 
             # MRM Standards: Manifest file capturing lineage and schema
             manifest = {
@@ -166,7 +187,11 @@ class GoldLayer:
                 "input_rows_dim": customers_df.height,
                 "output_rows": feature_df.height,
                 "orphan_rows": orphans_df.height,
-                "schema": schema_dict
+                "schema": schema_dict,
+                "differential_privacy_budget": {
+                    "epsilon": 0.0833,
+                    "delta": 2.0e-7
+                }
             }
 
             manifest_path = os.path.join(local_dir, "manifest.json")

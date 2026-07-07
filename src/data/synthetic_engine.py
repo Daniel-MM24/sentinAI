@@ -2,11 +2,15 @@ import time
 import logging
 import os
 from typing import Dict, List, Any, Tuple, Optional
+from datetime import datetime, timezone
 import numpy as np
 import polars as pl
 from pydantic import BaseModel, Field
 from scipy.stats import ks_2samp
 import duckdb
+from src.data.temporal_model import generate_fy25_timestamps
+
+from src.data.distribution_sampler import MpesaDistributionSampler, CorporateIdentity, TransactionRecord
 
 from src.data.bronze import BronzeLayer
 from src.data.lineage_decorator import lineage_trace, emit_transformation_metadata
@@ -44,7 +48,7 @@ class DistributionParams(BaseModel):
     
     # DP Framework Parameters
     dataset_size: int = Field(default=500000, description="Number of distinct customers for Delta calculation")
-    total_queries_per_year: int = Field(default=10, description="Expected number of generations/queries per year")
+    total_queries_per_year: int = Field(default=12, description="Expected number of generations/queries per year")
     query_type: str = Field(default="standard", description="Sensitivity of the generation")
     clipping_bound: float = Field(default=10000.0, description="Max amount to clip to before adding noise (Sensitivity)")
     
@@ -101,89 +105,131 @@ class SyntheticMpesaGenerator:
         """
         Generates synthetic transaction logs following M-Pesa distribution logic.
         """
+        import time
+        start_gen = time.time()
+        
         # 1. Initialize users and their balances (simulate some realistic starting balances)
         initial_balances = self._rng.lognormal(
             mean=self.params.amount_mean + 5,  # Increased starting balance to prevent high rejection rates
             sigma=self.params.amount_std, 
             size=num_users
         )
-        user_balances = {f"user_{i}": balance for i, balance in enumerate(initial_balances)}
-        user_ids = list(user_balances.keys())
+        user_ids = np.array([f"user_{i}" for i in range(num_users)])
 
         # Generate deterministic, unique (tax_id, email) pairs per distinct customer entity
-        user_identities = {}
-        used_pairs = set()
+        tax_ids = [f"TAX-{x}" for x in self._rng.integers(100000000, 999999999, size=num_users)]
         email_domains = ["gmail.com", "yahoo.com", "hotmail.com", "outlook.com"]
-
-        for user_id in user_ids:
-            while True:
-                tax_id = f"TAX-{self._rng.integers(100000000, 999999999)}"
-                email = f"user_{self._rng.integers(1000, 9999)}@{self._rng.choice(email_domains)}"
-                pair = (tax_id, email)
-                if pair not in used_pairs:
-                    used_pairs.add(pair)
-                    user_identities[user_id] = {"tax_id": tax_id, "email": email}
-                    break
+        email_domains_arr = self._rng.choice(email_domains, size=num_users)
+        emails = [f"user_{x}@{domain}" for x, domain in zip(self._rng.integers(1000, 9999, size=num_users), email_domains_arr)]
 
         # 2. Sample transaction types
         tx_types = list(self.params.transaction_type_probs.keys())
         tx_probs = list(self.params.transaction_type_probs.values())
         channels = self._rng.choice(tx_types, p=tx_probs, size=n_records)
 
+        sampler = MpesaDistributionSampler(seed=self.params.seed)
+
         # 3. Sample amounts from learned distributions
-        raw_amounts = self._rng.lognormal(mean=self.params.amount_mean, sigma=self.params.amount_std, size=n_records)
+        raw_amounts = sampler.sample_amounts(n_records)
         
         # 4. Add calibrated noise for DP using the dynamic budget framework
         amounts = self._apply_differential_privacy(raw_amounts)
 
         # 5. Sample temporal velocity (inter-arrival times)
-        inter_arrival_mins = self._rng.exponential(scale=self.params.velocity_lambda, size=n_records)
-        timestamps = np.datetime64('2024-01-01T00:00:00') + np.array(
-            [np.timedelta64(int(m * 60), 's') for m in np.cumsum(inter_arrival_mins)]
-        )
+        inter_arrival_mins = sampler.sample_inter_arrival_times(n_records)
+        
+        # Ensure all transactions fall within FY 2025
+        timestamps = generate_fy25_timestamps(n_records, inter_arrival_mins)
+        timestamps_pl = pl.Series("timestamp", timestamps.astype("datetime64[us]")).dt.replace_time_zone("UTC")
+
+        # Generate anomalies
+        anomaly_flags, anomaly_types = sampler.generate_anomalies(n_records)
 
         # 6. Apply strict business rules and constraint enforcement
-        # Modified: Generate unique (tax_id, email) pairs to prevent deduplication loss in Silver layer
-        valid_records = []
+        # Fast Vectorized Balance Constraints
+        balances = initial_balances.copy()
+        sender_indices = self._rng.integers(0, num_users, size=n_records)
+        final_sender_indices = np.zeros(n_records, dtype=int)
+        
         for i in range(n_records):
-            sender = self._rng.choice(user_ids)
-            amount = amounts[i]
-            
-            # Check balance constraint (referential integrity)
-            if user_balances[sender] >= amount:
-                user_balances[sender] -= amount
-                valid_records.append({
-                    "transaction_id": f"txn_{i}_{int(time.time())}",
-                    "sender_id": sender,  # Pseudonymized for data minimization
-                    "transaction_amount": round(float(amount), 2),
-                    "timestamp": timestamps[i],
-                    "channel_type": channels[i],
-                    "tax_id": user_identities[sender]["tax_id"],  # Enforces entity-grain integrity
-                    "email": user_identities[sender]["email"]     # Enforces entity-grain integrity
-                })
+            s = sender_indices[i]
+            amt = amounts[i]
+            if balances[s] >= amt:
+                balances[s] -= amt
+                final_sender_indices[i] = s
             else:
-                # If balance constraint fails, assign to a random user with sufficient balance
-                # This ensures we generate the requested number of records
-                eligible_senders = [uid for uid, bal in user_balances.items() if bal >= amount]
-                if eligible_senders:
-                    sender = self._rng.choice(eligible_senders)
-                    user_balances[sender] -= amount
-                    valid_records.append({
-                        "transaction_id": f"txn_{i}_{int(time.time())}",
-                        "sender_id": sender,
-                        "transaction_amount": round(float(amount), 2),
-                        "timestamp": timestamps[i],
-                        "channel_type": channels[i],
-                        "tax_id": user_identities[sender]["tax_id"],  # Enforces entity-grain integrity
-                        "email": user_identities[sender]["email"]     # Enforces entity-grain integrity
-                    })
+                found = False
+                for _ in range(3):
+                    s = self._rng.integers(0, num_users)
+                    if balances[s] >= amt:
+                        balances[s] -= amt
+                        final_sender_indices[i] = s
+                        found = True
+                        break
+                if not found:
+                    balances[s] += (amt * 2.0)
+                    balances[s] -= amt
+                    final_sender_indices[i] = s
+
+        counties = ["Nairobi", "Mombasa", "Kiambu", "Nakuru", "Machakos", "Kisumu"]
+        
+        transaction_ids = [f"txn_{i}_{int(time.time())}" for i in range(n_records)]
+        receivers = [f"recv_{r}" for r in self._rng.integers(1, 10000, size=n_records)]
+        sender_counties = self._rng.choice(counties, size=n_records)
+        receiver_counties = self._rng.choice(counties, size=n_records)
+        device_ages = self._rng.integers(1, 1000, size=n_records)
+        sim_matches = self._rng.choice([True, False], p=[0.98, 0.02], size=n_records)
+        wallet_tiers = self._rng.integers(1, 4, size=n_records)
+        kyc_levels = self._rng.integers(1, 5, size=n_records)
+        fraud_flags = self._rng.choice([0, 1, 2], p=[0.95, 0.04, 0.01], size=n_records)
+        anomaly_types_str = [str(x) if x else None for x in anomaly_types]
+
+        # Construct Polars DataFrame directly
+        df = pl.DataFrame({
+            "transaction_id": transaction_ids,
+            "sender_id": user_ids[final_sender_indices],
+            "transaction_amount": amounts,
+            "timestamp": timestamps_pl,
+            "channel_type": channels,
+            "tax_id": [tax_ids[s] for s in final_sender_indices],
+            "email": [emails[s] for s in final_sender_indices],
+            "receiver_id": receivers,
+            "sender_county": sender_counties,
+            "receiver_county": receiver_counties,
+            "device_age_days": device_ages,
+            "sim_match_status": sim_matches,
+            "wallet_tier_encoded": wallet_tiers,
+            "kyc_level_encoded": kyc_levels,
+            "prev_fraud_flag_count_90d": fraud_flags,
+            "anomaly_flag": anomaly_flags.astype(bool),
+            "anomaly_type": anomaly_types_str
+        })
+
+        schema = {
+            "transaction_id": pl.String,
+            "sender_id": pl.String,
+            "transaction_amount": pl.Float64,
+            "timestamp": pl.Datetime("us", "UTC"),
+            "channel_type": pl.String,
+            "tax_id": pl.String,
+            "email": pl.String,
+            "receiver_id": pl.String,
+            "sender_county": pl.String,
+            "receiver_county": pl.String,
+            "device_age_days": pl.Int64,
+            "sim_match_status": pl.Boolean,
+            "wallet_tier_encoded": pl.Int64,
+            "kyc_level_encoded": pl.Int64,
+            "prev_fraud_flag_count_90d": pl.Int64,
+            "anomaly_flag": pl.Boolean,
+            "anomaly_type": pl.String
+        }
+        df = df.cast(schema)
 
         # Audit trail logging
-        logger.info(f"Generated {len(valid_records)} valid synthetic records out of {n_records} attempted.")
+        logger.info(f"Generated {len(df)} valid synthetic records in {time.time() - start_gen:.2f} seconds.")
         logger.info(f"Audit Trail - Seed: {self.params.seed}, Model Version: {self.params.model_version}")
 
-        df = pl.DataFrame(valid_records)
-        
         # Persist to DuckDB to avoid expensive regenerations
         db_dir = os.path.dirname(self.db_path)
         if db_dir:
@@ -193,25 +239,20 @@ class SyntheticMpesaGenerator:
             # Create table if not exists based on schema, then insert data
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS synthetic_transactions "
-                "(transaction_id VARCHAR, sender_id VARCHAR, transaction_amount DOUBLE, timestamp TIMESTAMP, channel_type VARCHAR, tax_id VARCHAR, email VARCHAR)"
+                "(transaction_id VARCHAR, sender_id VARCHAR, transaction_amount DOUBLE, timestamp TIMESTAMP, channel_type VARCHAR, tax_id VARCHAR, email VARCHAR, receiver_id VARCHAR, sender_county VARCHAR, receiver_county VARCHAR, device_age_days BIGINT, sim_match_status BOOLEAN, wallet_tier_encoded BIGINT, kyc_level_encoded BIGINT, prev_fraud_flag_count_90d BIGINT, anomaly_flag BOOLEAN, anomaly_type VARCHAR)"
             )
-            # Convert to pandas for safer DuckDB insertion (compatibility fix)
-            import pandas as pd
-            pdf = df.to_pandas()
-            # Insert data using pandas conversion
-            for _, row in pdf.iterrows():
+            # Use polars to_arrow for duckdb
+            arrow_table = df.to_arrow()
+            try:
+                conn.execute("INSERT INTO synthetic_transactions SELECT * FROM arrow_table")
+            except duckdb.BinderException:
+                logger.warning("Schema mismatch detected. Dropping old DuckDB table and recreating.")
+                conn.execute("DROP TABLE synthetic_transactions")
                 conn.execute(
-                    "INSERT INTO synthetic_transactions VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    [
-                        str(row['transaction_id']),
-                        str(row['sender_id']),
-                        float(row['transaction_amount']),
-                        str(row['timestamp']),
-                        str(row['channel_type']),
-                        str(row['tax_id']),
-                        str(row['email'])
-                    ]
+                    "CREATE TABLE synthetic_transactions "
+                    "(transaction_id VARCHAR, sender_id VARCHAR, transaction_amount DOUBLE, timestamp TIMESTAMP, channel_type VARCHAR, tax_id VARCHAR, email VARCHAR, receiver_id VARCHAR, sender_county VARCHAR, receiver_county VARCHAR, device_age_days BIGINT, sim_match_status BOOLEAN, wallet_tier_encoded BIGINT, kyc_level_encoded BIGINT, prev_fraud_flag_count_90d BIGINT, anomaly_flag BOOLEAN, anomaly_type VARCHAR)"
                 )
+                conn.execute("INSERT INTO synthetic_transactions SELECT * FROM arrow_table")
             
         logger.info(f"Persisted synthetic batch to DuckDB at {self.db_path}")
 
@@ -262,6 +303,16 @@ class SyntheticMpesaGenerator:
         bronze_df = bronze_df.with_columns([
             pl.col("tax_id"),
             pl.col("email"),
+            pl.col("receiver_id"),
+            pl.col("sender_county"),
+            pl.col("receiver_county"),
+            pl.col("device_age_days"),
+            pl.col("sim_match_status"),
+            pl.col("wallet_tier_encoded"),
+            pl.col("kyc_level_encoded"),
+            pl.col("prev_fraud_flag_count_90d"),
+            pl.col("anomaly_flag"),
+            pl.col("anomaly_type"),
             pl.col("timestamp").alias("timestamp")
         ])
         

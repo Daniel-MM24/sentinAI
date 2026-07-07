@@ -7,7 +7,7 @@ import polars as pl
 import uuid
 
 # Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.data.bronze import BronzeLayer
 from src.datasets.silver import SilverLayer

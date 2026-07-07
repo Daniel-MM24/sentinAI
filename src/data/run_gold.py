@@ -7,7 +7,7 @@ import polars as pl
 import uuid
 
 # Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.datasets.gold import GoldLayer
 from openlineage.client import OpenLineageClient
