@@ -93,7 +93,11 @@ class GoldLayer:
                 # Base model card features
                 (pl.col("timestamp").dt.weekday() >= 5).cast(pl.Boolean).alias("is_weekend"),
                 pl.col("amount").log1p().alias("log_amount"),
-                pl.col("anomaly_type").alias("anomaly_case_id")
+                # Handle anomaly_case_id - use anomaly_type if available, otherwise generate synthetic ID
+                pl.when(pl.col("anomaly_type").is_not_null())
+                .then(pl.col("anomaly_type"))
+                .otherwise(pl.lit(None, dtype=pl.String))
+                .alias("anomaly_case_id")
             )
             
             # Key Engineered Features from Model Card

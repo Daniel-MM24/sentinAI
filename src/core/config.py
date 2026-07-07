@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     
     # OpenLineage Configuration
     OPENLINEAGE_URL: Optional[str] = Field(
-        default=None,
+        default="http://localhost:5000",
         description="URL for the OpenLineage backend (e.g. Marquez)."
     )
     OPENLINEAGE_NAMESPACE: str = Field(

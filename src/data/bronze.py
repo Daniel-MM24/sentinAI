@@ -156,12 +156,52 @@ class BronzeLayer:
         logger.info(f"Starting synthetic Bronze ingestion (run_id={run_id})")
 
         try:
-            # Map synthetic data columns to bronze schema
-            mapped_df = synthetic_data.rename({
-                "transaction_id": "customer_id",
-                "sender_id": "customer_name", 
-                "transaction_amount": "amount"
-            })
+            # Map AML generator columns to bronze schema
+            # AMLGenerator produces: transaction_id, customer_id, counterparty_id, timestamp, 
+            # transaction_type, amount, post_tx_balance, plus AML features
+            if "customer_id" in synthetic_data.columns:
+                # AMLGenerator schema - map appropriately
+                # Keep counterparty_id as-is for AML schema compatibility
+                mapped_df = synthetic_data.rename({
+                    "transaction_type": "currency",  # Use transaction_type as currency placeholder
+                })
+                # Add customer_name from counterparty_id if not present
+                if "customer_name" not in mapped_df.columns and "counterparty_id" in mapped_df.columns:
+                    mapped_df = mapped_df.with_columns([
+                        pl.col("counterparty_id").alias("customer_name")
+                    ])
+                # Ensure transaction_id is mapped to customer_id if not already present
+                if "transaction_id" in mapped_df.columns and "customer_id" not in mapped_df.columns:
+                    mapped_df = mapped_df.rename({"transaction_id": "customer_id"})
+                
+                # Generate synthetic tax_id for AML compliance (required by silver layer)
+                if "tax_id" not in mapped_df.columns:
+                    mapped_df = mapped_df.with_columns([
+                        pl.col("customer_id").map_elements(lambda x: f"TAX_{x}", return_dtype=pl.String).alias("tax_id")
+                    ])
+                
+                # Generate synthetic email for AML compliance
+                if "email" not in mapped_df.columns:
+                    mapped_df = mapped_df.with_columns([
+                        pl.col("customer_id").map_elements(lambda x: f"{x.lower()}@sentinai.synthetic", return_dtype=pl.String).alias("email")
+                    ])
+            else:
+                # Legacy schema fallback
+                mapped_df = synthetic_data.rename({
+                    "transaction_id": "customer_id",
+                    "sender_id": "customer_name", 
+                    "transaction_amount": "amount"
+                })
+                
+                # Generate synthetic tax_id and email for legacy schema
+                if "tax_id" not in mapped_df.columns:
+                    mapped_df = mapped_df.with_columns([
+                        pl.col("customer_id").map_elements(lambda x: f"TAX_{x}", return_dtype=pl.String).alias("tax_id")
+                    ])
+                if "email" not in mapped_df.columns:
+                    mapped_df = mapped_df.with_columns([
+                        pl.col("customer_id").map_elements(lambda x: f"{x.lower()}@sentinai.synthetic", return_dtype=pl.String).alias("email")
+                    ])
             
             # Add Bronze layer metadata with synthetic flag
             enriched_df = self._add_bronze_metadata(

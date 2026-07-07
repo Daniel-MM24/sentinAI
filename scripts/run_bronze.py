@@ -9,7 +9,7 @@ import uuid
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.data.bronze import BronzeLayer
-from src.data.synthetic_engine import SyntheticMpesaGenerator
+from src.data.synthetic_generator import AMLGenerator, AMLGeneratorConfig
 from openlineage.client import OpenLineageClient
 from openlineage.client.run import RunEvent, RunState, Run, Job, Dataset
 
@@ -48,23 +48,20 @@ def main():
         os.makedirs("data/bronze/transactions", exist_ok=True)
         bronze_layer = BronzeLayer(bronze_base_path="data/bronze")
         
-        logger.info("Generating synthetic M-Pesa transaction data...")
-        generator = SyntheticMpesaGenerator(
-            target_distribution_params={
-                "transaction_type_probs": {"P2P": 0.6, "C2B": 0.3, "B2C": 0.1},
-                "amount_mean": 5.95,
-                "amount_std": 1.25,
-                "velocity_lambda": 320.0,
-                "dataset_size": 100000,
-                "total_queries_per_year": 12,
-                "query_type": "standard",
-                "clipping_bound": 250000.0,
-                "seed": 42,
-                "model_version": "v1.0"
-            }
+        fast_mode = os.getenv("SENTINAI_FAST_MODE", "1").lower() in {"1", "true", "yes", "on"}
+        config = AMLGeneratorConfig(
+            num_customers=int(os.getenv("SENTINAI_BROZE_NUM_CUSTOMERS", "1000" if fast_mode else "1000000")),
+            num_days=int(os.getenv("SENTINAI_BROZE_NUM_DAYS", "7" if fast_mode else "365")),
+            seed=int(os.getenv("SENTINAI_BROZE_SEED", "42"))
         )
-        
-        synthetic_data = generator.generate_batch(n_records=1000000, num_users=50000)
+        logger.info(
+            "Generating AML-focused synthetic transaction data with config: customers=%s days=%s seed=%s",
+            config.num_customers,
+            config.num_days,
+            config.seed,
+        )
+        generator = AMLGenerator(config)
+        synthetic_data = generator.generate()
         logger.info(f"Generated {synthetic_data.height} synthetic records")
         
         partition_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")

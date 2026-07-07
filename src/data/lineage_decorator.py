@@ -12,6 +12,7 @@ transformation metadata for auditability.
 
 import functools
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Callable, List, Optional, Any, Dict
@@ -24,8 +25,23 @@ from openlineage.client.facet_v2 import (
     data_quality_metrics_input_dataset,
     output_statistics_output_dataset,
 )
+from openlineage.client.transport.http import HttpConfig, HttpTransport
+
+from src.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _create_openlineage_client() -> OpenLineageClient:
+    """Create an OpenLineage client wired to the configured endpoint when available."""
+    configured_url = getattr(settings, "OPENLINEAGE_URL", None) or os.getenv("OPENLINEAGE_URL")
+    if configured_url:
+        transport = HttpTransport(HttpConfig(url=configured_url))
+        logger.info("Using OpenLineage HTTP transport for lineage events: %s", configured_url)
+        return OpenLineageClient(transport=transport)
+
+    logger.info("OPENLINEAGE_URL is not configured; falling back to console transport.")
+    return OpenLineageClient()
 
 
 def lineage_trace(
@@ -65,7 +81,7 @@ def lineage_trace(
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def wrapper(*args, **kwargs) -> Any:
-            client = ol_client or OpenLineageClient()
+            client = ol_client or _create_openlineage_client()
             run_id = str(uuid.uuid4())
 
             # Emit START event

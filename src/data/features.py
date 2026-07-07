@@ -173,7 +173,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
             from datetime import datetime, timezone
 
             client = OpenLineageClient(
-                url=self.config.get("openlineage_url", "http://localhost:5000")
+                url=self.config.get("openlineage_url", "http://localhost:8001")
             )
 
             dataset = Dataset(
