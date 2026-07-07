@@ -149,3 +149,5 @@ config/agents/openrouter_models.yaml
 
 # documentation
 docs
+
+parquet.py
