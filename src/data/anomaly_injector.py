@@ -19,7 +19,7 @@ import logging
 import numpy as np
 import polars as pl
 from typing import Optional, Dict, Any, List
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,17 @@ class InjectorConfig:
     """Configuration for the FinancialAnomalyInjector."""
     anomaly_ratio: float = 0.015  # 1.5% of records should be anomalous
     seed: int = 42
+    # Equal 12.5% share per anomaly type (8 types × 0.125 = 1.0)
+    anomaly_type_weights: Dict[str, float] = field(default_factory=lambda: {
+        AnomalyType.AMOUNT_SPIKE.value: 0.125,
+        AnomalyType.VELOCITY_SURGE.value: 0.125,
+        AnomalyType.BALANCE_DEPLETION.value: 0.125,
+        AnomalyType.PRICE_MANIPULATION.value: 0.125,
+        AnomalyType.LIQUIDITY_ANOMALY.value: 0.125,
+        AnomalyType.SPREAD_ABNORMALITY.value: 0.125,
+        AnomalyType.COUNTERPARTY_RISK.value: 0.125,
+        AnomalyType.TEMPORAL_PATTERN.value: 0.125,
+    })
     amount_spike_multiplier: float = 10.0  # Multiplier for amount spikes
     velocity_threshold: float = 5.0  # Std devs above mean for velocity
     balance_depletion_threshold: float = 0.9  # 90% balance depletion
@@ -419,20 +430,22 @@ class FinancialAnomalyInjector:
         # Clone the DataFrame to avoid modifying the original
         df = clean_df.clone()
         
-        # Distribute anomalies across different types
-        anomaly_types = [
-            AnomalyType.AMOUNT_SPIKE,
-            AnomalyType.VELOCITY_SURGE,
-            AnomalyType.BALANCE_DEPLETION,
-            AnomalyType.PRICE_MANIPULATION,
-            AnomalyType.LIQUIDITY_ANOMALY,
-            AnomalyType.SPREAD_ABNORMALITY,
-            AnomalyType.COUNTERPARTY_RISK,
-            AnomalyType.TEMPORAL_PATTERN
+        # Distribute anomalies across different types using configured weights
+        anomaly_types = list(AnomalyType)
+        type_values = [t.value for t in anomaly_types]
+        weights = [
+            self.config.anomaly_type_weights.get(tv, 0.0) for tv in type_values
         ]
-        
+        weight_sum = sum(weights)
+        if weight_sum <= 0:
+            probabilities = [1.0 / len(anomaly_types)] * len(anomaly_types)
+        else:
+            probabilities = [w / weight_sum for w in weights]
+
         # Assign anomaly types to indices
-        assigned_types = self._rng.choice(anomaly_types, size=n_anomalies)
+        assigned_types = self._rng.choice(
+            anomaly_types, size=n_anomalies, p=probabilities
+        )
         
         # Create arrays to track which records get which anomaly type
         anomaly_type_array = np.array([None] * n_total, dtype=object)

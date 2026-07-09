@@ -1,133 +1,29 @@
-import os
-import sys
-import logging
-from pathlib import Path
-from datetime import datetime, timezone
-import polars as pl
-import uuid
+"""CLI wrapper for the Gold layer feature store materialization stage."""
 
-# Add project root to path
+import logging
+import sys
+from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.datasets.gold import GoldLayer
-from openlineage.client import OpenLineageClient
-from openlineage.client.run import RunEvent, RunState, Run, Job, Dataset
+from src.data.medallion_stages import run_gold_stage
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-def main():
-    logger.info("Starting Gold Layer Materialization")
-    
-    # Initialize OpenLineage client
-    ol_client = OpenLineageClient()
-    run_id = str(uuid.uuid4())
-    namespace = "sentinai.gold"
-    job_name = "gold_materialize_script"
-    
-    # Emit START event
+
+def main() -> None:
     try:
-        start_event = RunEvent(
-            eventType=RunState.START,
-            eventTime=datetime.now(timezone.utc).isoformat(),
-            run=Run(runId=run_id),
-            job=Job(namespace=namespace, name=job_name),
-            producer="sentinai",
-            inputs=[
-                Dataset(namespace="sentinai.silver", name="silver_transactions"),
-                Dataset(namespace="sentinai.silver", name="silver_customers")
-            ],
-            outputs=[]
-        )
-        ol_client.emit(start_event)
-        logger.info(f"Lineage START emitted: {job_name} (run_id={run_id})")
-    except Exception as e:
-        logger.warning(f"Failed to emit START event: {e}")
-    
-    try:
-        os.makedirs("data/gold", exist_ok=True)
-        gold_layer = GoldLayer(version="v1.0")
-        
-        partition_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        
-        # Read transaction fact stream
-        transactions_path = Path("data/silver") / f"silver_transactions_{partition_key}.parquet"
-        if not transactions_path.exists():
-            logger.error(f"Transaction fact stream not found at {transactions_path}")
-            sys.exit(1)
-        
-        logger.info(f"Reading transaction fact stream from: {transactions_path}")
-        # Explicit scan and evaluation for optimization if possible, but reading directly is fine
-        transactions_df = pl.scan_parquet(transactions_path).collect()
-        logger.info(f"Read {transactions_df.height} transaction records from Silver layer")
-        
-        # Ensure Safaricom FMS vectors are explicitly configured as expressions if present
-        if "anomaly_flag" in transactions_df.columns:
-            logger.info("FMS anomaly vectors detected in Silver transactions stream")
-        
-        # Read customer dimension registry
-        customers_path = Path("data/silver") / f"silver_customers_{partition_key}.parquet"
-        if not customers_path.exists():
-            logger.error(f"Customer dimension registry not found at {customers_path}")
-            sys.exit(1)
-        
-        logger.info(f"Reading customer dimension registry from: {customers_path}")
-        customers_df = pl.scan_parquet(customers_path).collect()
-        logger.info(f"Read {customers_df.height} customer records from Silver layer")
-        
-        logger.info("Creating feature store...")
-        gold_uri = gold_layer.create_feature_store(
-            transactions_df=transactions_df,
-            customers_df=customers_df
-        )
-        
-        logger.info(f"Gold feature store created at: {gold_uri}")
-        logger.info("Gold Layer Materialization successfully completed.")
-        
-        # Emit COMPLETE event
-        try:
-            complete_event = RunEvent(
-                eventType=RunState.COMPLETE,
-                eventTime=datetime.now(timezone.utc).isoformat(),
-                run=Run(runId=run_id),
-                job=Job(namespace=namespace, name=job_name),
-                producer="sentinai",
-                inputs=[
-                    Dataset(namespace="sentinai.silver", name="silver_transactions"),
-                    Dataset(namespace="sentinai.silver", name="silver_customers")
-                ],
-                outputs=[Dataset(namespace=namespace, name="gold_feature_store")]
-            )
-            ol_client.emit(complete_event)
-            logger.info(f"Lineage COMPLETE emitted: {job_name} (run_id={run_id})")
-        except Exception as e:
-            logger.warning(f"Failed to emit COMPLETE event: {e}")
-        
-    except Exception as e:
-        # Emit FAIL event
-        try:
-            fail_event = RunEvent(
-                eventType=RunState.FAIL,
-                eventTime=datetime.now(timezone.utc).isoformat(),
-                run=Run(runId=run_id),
-                job=Job(namespace=namespace, name=job_name),
-                producer="sentinai",
-                inputs=[
-                    Dataset(namespace="sentinai.silver", name="silver_transactions"),
-                    Dataset(namespace="sentinai.silver", name="silver_customers")
-                ],
-                outputs=[]
-            )
-            ol_client.emit(fail_event)
-            logger.info(f"Lineage FAIL emitted: {job_name} (run_id={run_id})")
-        except Exception as lineage_error:
-            logger.warning(f"Failed to emit FAIL event: {lineage_error}")
-        
-        logger.error(f"Gold Layer failed: {e}")
+        result = run_gold_stage()
+    except Exception:
+        logger.exception("Gold layer failed")
         sys.exit(1)
+
+    logger.info("Gold layer completed: feature store at %s", result.gold_uri)
+
 
 if __name__ == "__main__":
     main()

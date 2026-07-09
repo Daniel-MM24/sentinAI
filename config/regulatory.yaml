@@ -1,0 +1,82 @@
+# POCAMLA / CBK regulatory thresholds for M-Pesa AML compliance.
+# Loaded by src.data.pipelines and validated by src.data.validators.
+
+metadata:
+  version: "pocamla.fy26.1"
+  authority: "Central Bank of Kenya"
+  effective_date: "2024-01-01"
+  review_date: "2026-07-07"
+
+temporal:
+  min_timestamp: "2024-01-01T00:00:00"
+  max_timestamp: "2026-07-07T23:59:59"
+
+kyc_tiers:
+  TIER_1:
+    balance_cap_kes: 50000
+    daily_velocity_cap_kes: 100000
+  TIER_2:
+    balance_cap_kes: 500000
+    daily_velocity_cap_kes: 1000000
+  VENDOR_MERCHANT:
+    balance_cap_kes: 5000000
+    daily_velocity_cap_kes: 10000000
+
+allowed_values:
+  kyc_tier_level:
+    - TIER_1
+    - TIER_2
+    - VENDOR_MERCHANT
+  counterparty_risk_tier:
+    - LOW
+    - MEDIUM
+    - HIGH
+  transaction_type:
+    - P2P
+    - C2B
+    - B2C
+    - B2B
+    - STK_Push
+    - Withdrawal
+  channel:
+    - USSD
+    - App
+    - Web
+    - API
+  region:
+    - Nairobi
+    - Mombasa
+    - Kisumu
+    - Nakuru
+  anomaly_type:
+    - NONE
+    - VELOCITY_SURGE
+    - AMOUNT_SPIKE
+    - SMURFING
+    - ROUND_NUMBER_CHURN
+    - REGULATORY_CEILING_VIOLATION
+  regulatory_report_status:
+    - NOT_TRIGGERED
+    - SUSPICIOUS_ACTIVITY_FLAGGED
+    - ESCALATED_TO_FIU
+
+anomaly_detection:
+  amount_spike_multiplier: 3.0
+  smurfing_max_amount_kes: 10000
+  smurfing_min_daily_count: 5
+  round_number_modulus: 1000
+  round_number_min_daily_count: 3
+
+defaults:
+  kyc_tier_level: TIER_1
+  counterparty_risk_tier: LOW
+  transaction_type: P2P
+  channel: USSD
+  region: Nairobi
+  anomaly_type: NONE
+  regulatory_report_status: NOT_TRIGGERED
+  counterparty_id_prefix: "CP_UNKNOWN_"
+
+dead_letter:
+  enabled: true
+  output_path: "data/dead_letter/bronze_rejects"

@@ -1,26 +1,23 @@
+"""Synthetic clean-data generation and anomaly injection pipeline (library only)."""
+
+from __future__ import annotations
+
 import json
 import logging
-import os
-import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 import polars as pl
-
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.data.anomaly_injector import FinancialAnomalyInjector, InjectorConfig
 from src.data.lineage_decorator import emit_transformation_metadata, lineage_trace
 from src.data.synthetic_generator import CleanDataGenerator, GeneratorConfig
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
 logger = logging.getLogger(__name__)
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 @lineage_trace(
@@ -32,7 +29,7 @@ logger = logging.getLogger(__name__)
 def generate_clean_data(
     generator: CleanDataGenerator,
     output_path: Path,
-    run_id: Optional[str] = None,
+    run_id: str | None = None,
 ) -> pl.DataFrame:
     """Generate and persist the clean synthetic dataset with lineage metadata."""
     clean_df = generator.generate()
@@ -47,10 +44,7 @@ def generate_clean_data(
         output_rows=len(clean_df),
     )
 
-    logger.info(f"Generated {len(clean_df)} clean records")
-    logger.info(f"Shape: {clean_df.shape}")
-    logger.info(f"Columns: {clean_df.columns}")
-    logger.info(f"Clean data saved to {output_path}")
+    logger.info("Generated %s clean records at %s", len(clean_df), output_path)
     return clean_df
 
 
@@ -64,7 +58,7 @@ def inject_anomalies(
     injector: FinancialAnomalyInjector,
     clean_df: pl.DataFrame,
     output_path: Path,
-    run_id: Optional[str] = None,
+    run_id: str | None = None,
 ) -> pl.DataFrame:
     """Inject anomalies into the clean dataset and persist the result."""
     anomalous_df = injector.inject(clean_df)
@@ -79,29 +73,35 @@ def inject_anomalies(
         output_rows=len(anomalous_df),
     )
 
-    logger.info(f"Anomalies injected. Total records: {len(anomalous_df)}")
-    logger.info(f"Anomaly ratio: {anomalous_df['anomaly_flag'].mean():.2%}")
-    logger.info(f"Anomalous data saved to {output_path}")
+    logger.info(
+        "Anomalies injected: %s records, ratio=%.2f%%",
+        len(anomalous_df),
+        anomalous_df["anomaly_flag"].mean() * 100,
+    )
     return anomalous_df
 
 
 @lineage_trace(
     job_name="run_audit_and_synth_pipeline",
     input_datasets=["synthetic_generation_config"],
-    output_datasets=["synthetic_clean.parquet", "synthetic_anomalous.parquet", "pipeline_summary.json"],
+    output_datasets=[
+        "synthetic_clean.parquet",
+        "synthetic_anomalous.parquet",
+        "pipeline_summary.json",
+    ],
     namespace="sentinai.data",
 )
 def run_pipeline(
-    config: Optional[GeneratorConfig] = None,
-    output_dir: Optional[Path] = None,
-) -> Dict[str, Any]:
-    """Run the synthetic data generation and anomaly injection pipeline end to end."""
+    config: GeneratorConfig | None = None,
+    output_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Run clean synthetic generation and anomaly injection end to end."""
     logger.info("Starting two-stage synthetic data pipeline")
 
     if config is None:
         config = GeneratorConfig(num_records=1_000_000, num_entities=100_000, seed=42)
 
-    output_root = Path(output_dir) if output_dir is not None else Path(__file__).resolve().parent.parent.parent / "data"
+    output_root = output_dir or (PROJECT_ROOT / "data")
     output_root.mkdir(parents=True, exist_ok=True)
 
     clean_output_path = output_root / "synthetic_clean.parquet"
@@ -111,16 +111,14 @@ def run_pipeline(
     generator = CleanDataGenerator(config)
     clean_df = generate_clean_data(generator, clean_output_path)
 
-    injector_config = InjectorConfig(anomaly_ratio=0.015, seed=42)
-    injector = FinancialAnomalyInjector(injector_config)
+    injector = FinancialAnomalyInjector(InjectorConfig(anomaly_ratio=0.015, seed=42))
     anomalous_df = inject_anomalies(injector, clean_df, anomalous_output_path)
 
     summary = injector.get_anomaly_summary(anomalous_df)
     with open(summary_path, "w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2)
 
-    logger.info(f"Pipeline complete. Anomaly summary: {summary}")
-    logger.info(f"Summary saved to {summary_path}")
+    logger.info("Pipeline complete. Summary saved to %s", summary_path)
 
     return {
         "clean_output_path": clean_output_path,
@@ -128,12 +126,3 @@ def run_pipeline(
         "summary_path": summary_path,
         "summary": summary,
     }
-
-
-def main() -> None:
-    """CLI entrypoint for the lineage-aware synthetic audit/synthesis pipeline."""
-    run_pipeline()
-
-
-if __name__ == "__main__":
-    main()

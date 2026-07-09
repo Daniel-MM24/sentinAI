@@ -13,8 +13,16 @@ The generator produces AML-focused features including:
 
 CRITICAL: This module maintains mathematical balance integrity and generates
 stateful transaction histories with rolling window feature computation.
+
+MRM Compliance Features:
+- Deterministic seed configuration for reproducibility
+- Customer archetype generation with conditional probabilities
+- SHA-256 hash tokenization for PII elimination
+- Regulatory tier compliance (Tier 1/2/3 value caps)
+- Customer metadata export for audit trails
 """
 
+import hashlib
 import logging
 import numpy as np
 import polars as pl
@@ -25,25 +33,31 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from collections import defaultdict, deque
 from enum import Enum
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 
-class CustomerPersona(Enum):
-    """Behavioral personas for synthetic customers."""
-    REGULAR_USER = "regular_user"
-    MERCHANT = "merchant"
-    FREQUENT_TRANSFERRER = "frequent_transferrer"
-    SALARY_RECEIVER = "salary_receiver"
-    SPORADIC_USER = "sporadic_user"
-    HIGH_VOLUME_USER = "high_volume_user"
+class CustomerArchetype(Enum):
+    """Customer behavioral archetypes with transaction velocity patterns (MRM downscaling parameters)."""
+    RETAIL_HEAVY = "retail_heavy"  # 15%: High transaction velocity, 850-950 tx/year
+    RETAIL_STANDARD = "retail_standard"  # 70%: Moderate activity, 300-500 tx/year
+    MICRO_MERCHANT = "micro_merchant"  # 12%: Business patterns, 600-800 tx/year
+    CORPORATE_SME = "corporate_sme"  # 3%: High-value, low-frequency, 100-200 tx/year
+
+
+class WalletTier(Enum):
+    """Regulatory wallet tiers with transaction and balance limits (CBK guidelines)."""
+    TIER_1 = "tier_1"  # Max single: KES 70,000, Max balance: KES 300,000
+    TIER_2 = "tier_2"  # Max single: KES 150,000, Max balance: KES 500,000
+    TIER_3 = "tier_3"  # Max single: KES 250,000, Max balance: KES 500,000
 
 
 @dataclass
 class CustomerProfile:
     """Stateful customer profile with behavioral characteristics."""
     customer_id: str
-    persona: CustomerPersona
+    archetype: CustomerArchetype  # Updated to use new archetypes
     initial_balance: float
     current_balance: float
     avg_transaction_amount: float
@@ -63,7 +77,7 @@ class CustomerProfile:
     # Device and wallet attributes for Silver/Gold schemas
     device_age_days: int = 365  # Default device age
     sim_match_status: bool = True
-    wallet_tier_encoded: int = 1
+    wallet_tier: WalletTier = WalletTier.TIER_1  # Updated to use WalletTier enum
     prev_fraud_flag_count_90d: int = 0
     
     # Rolling window state
@@ -79,6 +93,7 @@ class AMLGeneratorConfig:
     """Configuration for the AML-focused synthetic generator."""
     num_customers: int = 1000
     num_days: int = 90
+    target_transactions: Optional[int] = None
     seed: int = 42
     
     # Transaction parameters
@@ -98,6 +113,11 @@ class AMLGeneratorConfig:
     # Network parameters
     network_density: float = 0.1
     community_detection: bool = True
+    
+    # MRM Compliance parameters
+    enable_pii_hashing: bool = True  # Enable SHA-256 hash tokenization
+    enforce_regulatory_caps: bool = True  # Enforce tier transaction/balance limits
+    export_customer_metadata: bool = True  # Export customers_metadata.csv
 
 
 @dataclass
@@ -579,53 +599,65 @@ class AMLGenerator:
     
     def _generate_customer_profiles(self) -> None:
         """
-        Generate synthetic customer profiles with behavioral personas.
+        Generate synthetic customer profiles with behavioral archetypes.
         
-        Creates diverse customer personas with realistic behavioral parameters
+        Creates diverse customer archetypes with realistic behavioral parameters
         including transaction patterns, balance management, and device/location profiles.
+        Uses MRM downscaling parameters for archetype distribution.
         """
-        personas_list = list(CustomerPersona)
-        persona_weights = [0.4, 0.15, 0.15, 0.15, 0.1, 0.05]  # Weighted distribution
+        # MRM downscaling parameters: 15%, 70%, 12%, 3%
+        archetypes_list = list(CustomerArchetype)
+        archetype_weights = [0.15, 0.70, 0.12, 0.03]  # Retail Heavy, Standard, Micro-Merchant, Corporate/SME
         
         locations = ["Nairobi", "Mombasa", "Kisumu", "Nakuru", "Eldoret", "Kiambu"]
         
         for i in range(self.config.num_customers):
-            customer_id = f"CUST_{i:06d}"
+            # Generate phone number and hash it for PII elimination
+            phone_number = f"2547{self._rng.integers(0, 100_000_000):08d}"
+            if self.config.enable_pii_hashing:
+                customer_id = hashlib.sha256(phone_number.encode()).hexdigest()
+            else:
+                customer_id = f"CUST_{i:06d}"
             
-            # Assign persona based on weighted distribution
-            persona = self._rng.choice(personas_list, p=persona_weights)
+            # Assign archetype based on MRM conditional probabilities
+            archetype = self._rng.choice(archetypes_list, p=archetype_weights)
             
-            # Generate persona-specific parameters
-            if persona == CustomerPersona.REGULAR_USER:
+            # Assign wallet tier based on archetype
+            wallet_tier = self._assign_wallet_tier(archetype)
+            
+            # Generate archetype-specific parameters based on MRM specifications
+            if archetype == CustomerArchetype.RETAIL_HEAVY:
+                # 15%: High transaction velocity, 850-950 tx/year
+                tx_per_year = self._rng.integers(850, 951)
+                frequency = tx_per_year / 365.0  # transactions per day
                 avg_amount = np.exp(self._rng.normal(7.0, 0.5))
-                frequency = self._rng.uniform(2.0, 5.0)
                 initial_balance = np.exp(self._rng.normal(8.0, 1.0))
-                volatility = self._rng.uniform(0.1, 0.3)
-            elif persona == CustomerPersona.MERCHANT:
-                avg_amount = np.exp(self._rng.normal(8.5, 0.8))
-                frequency = self._rng.uniform(10.0, 30.0)
-                initial_balance = np.exp(self._rng.normal(10.0, 1.5))
-                volatility = self._rng.uniform(0.3, 0.6)
-            elif persona == CustomerPersona.FREQUENT_TRANSFERRER:
-                avg_amount = np.exp(self._rng.normal(7.5, 0.6))
-                frequency = self._rng.uniform(15.0, 40.0)
-                initial_balance = np.exp(self._rng.normal(9.0, 1.2))
-                volatility = self._rng.uniform(0.4, 0.7)
-            elif persona == CustomerPersona.SALARY_RECEIVER:
-                avg_amount = np.exp(self._rng.normal(9.0, 0.4))
-                frequency = self._rng.uniform(1.0, 3.0)
-                initial_balance = np.exp(self._rng.normal(9.5, 1.0))
                 volatility = self._rng.uniform(0.2, 0.4)
-            elif persona == CustomerPersona.HIGH_VOLUME_USER:
-                avg_amount = np.exp(self._rng.normal(9.5, 0.7))
-                frequency = self._rng.uniform(20.0, 50.0)
-                initial_balance = np.exp(self._rng.normal(11.0, 1.5))
-                volatility = self._rng.uniform(0.5, 0.8)
-            else:  # SPORADIC_USER
-                avg_amount = np.exp(self._rng.normal(6.5, 0.8))
-                frequency = self._rng.uniform(0.5, 2.0)
-                initial_balance = np.exp(self._rng.normal(7.5, 1.0))
-                volatility = self._rng.uniform(0.05, 0.2)
+            elif archetype == CustomerArchetype.RETAIL_STANDARD:
+                # 70%: Moderate activity, 300-500 tx/year
+                tx_per_year = self._rng.integers(300, 501)
+                frequency = tx_per_year / 365.0
+                avg_amount = np.exp(self._rng.normal(7.0, 0.6))
+                initial_balance = np.exp(self._rng.normal(8.0, 1.2))
+                volatility = self._rng.uniform(0.1, 0.3)
+            elif archetype == CustomerArchetype.MICRO_MERCHANT:
+                # 12%: Business patterns, 600-800 tx/year
+                tx_per_year = self._rng.integers(600, 801)
+                frequency = tx_per_year / 365.0
+                avg_amount = np.exp(self._rng.normal(8.0, 0.8))
+                initial_balance = np.exp(self._rng.normal(9.5, 1.5))
+                volatility = self._rng.uniform(0.3, 0.5)
+            else:  # CORPORATE_SME
+                # 3%: High-value, low-frequency, 100-200 tx/year
+                tx_per_year = self._rng.integers(100, 201)
+                frequency = tx_per_year / 365.0
+                avg_amount = np.exp(self._rng.normal(9.5, 1.0))
+                initial_balance = np.exp(self._rng.normal(11.0, 2.0))
+                volatility = self._rng.uniform(0.4, 0.6)
+            
+            # Enforce regulatory tier caps on initial balance
+            if self.config.enforce_regulatory_caps:
+                initial_balance = self._enforce_balance_cap(initial_balance, wallet_tier)
             
             # Generate device and location
             device_id = f"DEV_{self._rng.integers(100000, 999999)}"
@@ -633,21 +665,25 @@ class AMLGenerator:
             kyc_level = self._rng.integers(1, 5)
             account_age = self._rng.integers(30, 365)
             
-            # Generate customer identity fields
+            # Generate customer identity fields (with PII hashing if enabled)
             customer_name = f"Customer_{i}"
-            email = f"customer{i}@example.com"
-            tax_id = f"TAX_{self._rng.integers(10000000, 99999999)}"
+            if self.config.enable_pii_hashing:
+                email_hash = hashlib.sha256(f"customer{i}@example.com".encode()).hexdigest()
+                email = f"{email_hash[:16]}@sentinai.synthetic"
+                tax_id = hashlib.sha256(f"TAX_{self._rng.integers(10000000, 99999999)}".encode()).hexdigest()[:16]
+            else:
+                email = f"customer{i}@example.com"
+                tax_id = f"TAX_{self._rng.integers(10000000, 99999999)}"
             
             # Generate device and wallet attributes
             device_age = self._rng.integers(30, 1825)  # 30 days to 5 years
             sim_match = self._rng.random() < 0.95  # 95% match rate
-            wallet_tier = self._rng.integers(1, 4)  # Tier 1-3
             prev_fraud_count = self._rng.integers(0, 3)  # Most have 0-2 flags
             
             # Create customer profile
             profile = CustomerProfile(
                 customer_id=customer_id,
-                persona=persona,
+                archetype=archetype,
                 initial_balance=initial_balance,
                 current_balance=initial_balance,
                 avg_transaction_amount=avg_amount,
@@ -662,13 +698,81 @@ class AMLGenerator:
                 tax_id=tax_id,
                 device_age_days=device_age,
                 sim_match_status=sim_match,
-                wallet_tier_encoded=wallet_tier,
+                wallet_tier=wallet_tier,
                 prev_fraud_flag_count_90d=prev_fraud_count
             )
             
             self.customers[customer_id] = profile
         
-        logger.info(f"Generated {len(self.customers)} customer profiles with diverse personas")
+        logger.info(f"Generated {len(self.customers)} customer profiles with MRM archetypes")
+    
+    def _assign_wallet_tier(self, archetype: CustomerArchetype) -> WalletTier:
+        """
+        Assign regulatory wallet tier based on customer archetype.
+        
+        Args:
+            archetype: Customer archetype
+            
+        Returns:
+            WalletTier enum value
+        """
+        # Tier assignment logic based on archetype patterns
+        if archetype == CustomerArchetype.CORPORATE_SME:
+            # Corporate/SMEs typically get Tier 3 for high-value transactions
+            tier_probs = [0.1, 0.3, 0.6]  # Higher probability for Tier 3
+        elif archetype == CustomerArchetype.MICRO_MERCHANT:
+            # Micro-merchants typically Tier 2
+            tier_probs = [0.2, 0.6, 0.2]
+        elif archetype == CustomerArchetype.RETAIL_HEAVY:
+            # Heavy retail users mixed Tier 1/2
+            tier_probs = [0.4, 0.5, 0.1]
+        else:  # RETAIL_STANDARD
+            # Standard retail mostly Tier 1
+            tier_probs = [0.7, 0.25, 0.05]
+        
+        tiers = list(WalletTier)
+        tier = self._rng.choice(tiers, p=tier_probs)
+        return tier
+    
+    def _enforce_balance_cap(self, balance: float, tier: WalletTier) -> float:
+        """
+        Enforce regulatory balance caps based on wallet tier.
+        
+        Args:
+            balance: Proposed balance amount
+            tier: Wallet tier
+            
+        Returns:
+            Balance clipped to tier limit
+        """
+        tier_limits = {
+            WalletTier.TIER_1: 300000.0,  # KES
+            WalletTier.TIER_2: 500000.0,  # KES
+            WalletTier.TIER_3: 500000.0,  # KES
+        }
+        
+        max_balance = tier_limits[tier]
+        return min(balance, max_balance)
+    
+    def _enforce_transaction_cap(self, amount: float, tier: WalletTier) -> float:
+        """
+        Enforce regulatory transaction caps based on wallet tier.
+        
+        Args:
+            amount: Proposed transaction amount
+            tier: Wallet tier
+            
+        Returns:
+            Amount clipped to tier limit
+        """
+        tier_limits = {
+            WalletTier.TIER_1: 70000.0,   # KES
+            WalletTier.TIER_2: 150000.0,  # KES
+            WalletTier.TIER_3: 250000.0,  # KES
+        }
+        
+        max_transaction = tier_limits[tier]
+        return min(amount, max_transaction)
     
     def _get_velocity_features(
         self, 
@@ -1168,7 +1272,8 @@ class AMLGenerator:
     def _simulate_day(
         self, 
         day: int, 
-        start_date: datetime
+        start_date: datetime,
+        max_transactions: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
         Simulate transactions for a single day.
@@ -1176,6 +1281,7 @@ class AMLGenerator:
         Args:
             day: Day number in simulation
             start_date: Simulation start date
+            max_transactions: Optional cap on transactions generated this day
             
         Returns:
             List of transaction records with AML features
@@ -1185,11 +1291,15 @@ class AMLGenerator:
         
         # Simulate transactions for each customer
         for customer_id, profile in self.customers.items():
+            if max_transactions is not None and len(daily_transactions) >= max_transactions:
+                break
             # Determine number of transactions for this customer today
             expected_tx = profile.transaction_frequency
             num_tx = self._rng.poisson(expected_tx)
             
             for tx_num in range(num_tx):
+                if max_transactions is not None and len(daily_transactions) >= max_transactions:
+                    break
                 # Generate transaction time
                 hour = self._rng.integers(6, 22)  # Business hours mostly
                 minute = self._rng.integers(0, 60)
@@ -1390,7 +1500,15 @@ class AMLGenerator:
         Returns:
             Polars DataFrame containing transaction records with comprehensive AML features
         """
-        logger.info(f"Starting stateful simulation for {self.config.num_days} days")
+        target = self.config.target_transactions
+        if target is not None:
+            logger.info(
+                "Starting stateful simulation for up to %s days (target=%s transactions)",
+                self.config.num_days,
+                target,
+            )
+        else:
+            logger.info(f"Starting stateful simulation for {self.config.num_days} days")
         
         # Generate customer profiles
         self._generate_customer_profiles()
@@ -1401,11 +1519,17 @@ class AMLGenerator:
         
         # Simulate each day
         for day in range(self.config.num_days):
-            daily_txs = self._simulate_day(day, start_date)
+            if target is not None and len(all_transactions) >= target:
+                break
+            remaining = None if target is None else target - len(all_transactions)
+            daily_txs = self._simulate_day(day, start_date, max_transactions=remaining)
             all_transactions.extend(daily_txs)
             
             if (day + 1) % 10 == 0:
                 logger.info(f"Completed day {day + 1}/{self.config.num_days}, total transactions: {len(all_transactions)}")
+        
+        if target is not None and len(all_transactions) > target:
+            all_transactions = all_transactions[:target]
         
         # Convert to Polars DataFrame
         df = pl.DataFrame(all_transactions)
@@ -1515,6 +1639,92 @@ class AMLGenerator:
         
         logger.info(f"AML synthetic data ingested to Bronze layer at {bronze_path}")
         return aml_df, bronze_path
+    
+    def export_customer_metadata(
+        self, 
+        output_path: str = "data/customers_metadata.csv"
+    ) -> pl.DataFrame:
+        """
+        Export customer metadata to CSV for MRM audit trails.
+        
+        This method exports customer metadata including user_id (hashed), archetype,
+        registration date, tier, and baseline parameters as specified in MRM requirements.
+        
+        Args:
+            output_path: Path to output CSV file
+            
+        Returns:
+            Polars DataFrame with customer metadata
+        """
+        if not self.customers:
+            logger.warning("No customer profiles generated. Run generate() first.")
+            return pl.DataFrame()
+        
+        # Generate registration dates (simulate realistic registration over past 5 years)
+        registration_dates = []
+        for customer_id in self.customers.keys():
+            days_ago = int(self._rng.integers(0, 1825))  # 0 to 5 years ago (convert to int)
+            reg_date = datetime.now() - timedelta(days=days_ago)
+            registration_dates.append(reg_date)
+        
+        # Build customer metadata dataframe
+        metadata_data = []
+        for i, (customer_id, profile) in enumerate(self.customers.items()):
+            metadata = {
+                "user_id": customer_id,  # Already hashed if PII hashing enabled
+                "archetype": profile.archetype.value,
+                "registration_date": registration_dates[i],
+                "tier": profile.wallet_tier.value,
+                "baseline_tx_per_year": int(profile.transaction_frequency * 365),
+                "baseline_avg_amount": profile.avg_transaction_amount,
+                "initial_balance": profile.initial_balance,
+            }
+            metadata_data.append(metadata)
+        
+        df = pl.DataFrame(metadata_data)
+        df = df.sort("registration_date")
+        
+        # Ensure output directory exists
+        output_file = Path(output_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Export to CSV
+        df.write_csv(output_path)
+        logger.info(f"Exported customer metadata to {output_path}")
+        
+        # Log summary statistics
+        self._log_customer_metadata_summary(df)
+        
+        return df
+    
+    def _log_customer_metadata_summary(self, df: pl.DataFrame) -> None:
+        """Log summary statistics for customer metadata."""
+        logger.info("=== Customer Metadata Summary ===")
+        logger.info(f"Total customers: {len(df)}")
+        
+        # Archetype distribution
+        archetype_counts = df.group_by("archetype").count().sort("count", descending=True)
+        logger.info("Archetype distribution:")
+        for row in archetype_counts.iter_rows(named=True):
+            logger.info(f"  {row['archetype']}: {row['count']} ({row['count']/len(df)*100:.1f}%)")
+        
+        # Tier distribution
+        tier_counts = df.group_by("tier").count().sort("count", descending=True)
+        logger.info("Tier distribution:")
+        for row in tier_counts.iter_rows(named=True):
+            logger.info(f"  {row['tier']}: {row['count']} ({row['count']/len(df)*100:.1f}%)")
+        
+        # Transaction statistics
+        logger.info(f"Transaction statistics:")
+        logger.info(f"  Total baseline tx/year: {df['baseline_tx_per_year'].sum():,}")
+        logger.info(f"  Avg tx/year per customer: {df['baseline_tx_per_year'].mean():.1f}")
+        logger.info(f"  Avg transaction amount: KES {df['baseline_avg_amount'].mean():.2f}")
+        logger.info(f"  Total initial balance: KES {df['initial_balance'].sum():,.2f}")
+        
+        # Registration date range
+        logger.info(f"Registration date range:")
+        logger.info(f"  Earliest: {df['registration_date'].min()}")
+        logger.info(f"  Latest: {df['registration_date'].max()}")
     
     def validate_balance_integrity(self, df: pl.DataFrame) -> Dict[str, Any]:
         """
