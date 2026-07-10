@@ -29,6 +29,14 @@ class Gender(str, Enum):
     FEMALE = "Female"
 
 
+class CustomerArchetype(str, Enum):
+    """Customer behavioral archetypes with transaction velocity patterns (MRM downscaling parameters)."""
+    RETAIL_HEAVY = "retail_heavy"  # 15%: High transaction velocity, 850-950 tx/year
+    RETAIL_STANDARD = "retail_standard"  # 70%: Moderate activity, 300-500 tx/year
+    MICRO_MERCHANT = "micro_merchant"  # 12%: Business patterns, 600-800 tx/year
+    CORPORATE_SME = "corporate_sme"  # 3%: Corporate/SME patterns, high-value tx
+
+
 class KYCTier(str, Enum):
     """KYC tiers with regulatory transaction and balance limits (CBK guidelines)."""
     TIER_1 = "tier_1"  # Basic: 60% - Tx ≤ KES 70,000, Balance ≤ KES 300,000
@@ -53,7 +61,7 @@ class CountyProfile:
 
 @dataclass
 class CustomerProfile:
-    """Complete customer profile with demographic, tier, and risk data."""
+    """Complete customer profile with demographic, tier, risk, and archetype data."""
     customer_id: str
     gender: Gender
     age: int
@@ -66,6 +74,7 @@ class CustomerProfile:
     international_transaction_flag: bool
     account_age_days: int
     initial_balance: float
+    archetype: CustomerArchetype
 
 
 @dataclass
@@ -73,22 +82,25 @@ class StratifiedProfileConfig:
     """Configuration for stratified customer profile generation."""
     num_customers: int = 1000
     seed: int = 42
-    
+
     # Demographic parameters
     gender_male_pct: float = 0.49  # 49% Male, 51% Female
     age_mean: float = 32.0  # Normal distribution mean
     age_std: float = 10.0  # Normal distribution std
     age_min: int = 18  # Minimum age cap
     age_max: int = 80  # Maximum age cap
-    
+
     # KYC tier distribution
     tier_1_pct: float = 0.60  # 60% Tier 1
     tier_2_pct: float = 0.30  # 30% Tier 2
     tier_3_pct: float = 0.10  # 10% Tier 3
-    
+
     # High-risk entity flags
     betting_platform_pct: float = 0.02  # 2% betting platform users
     international_tx_pct: float = 0.03  # 3% international transaction users
+
+    # Archetype distribution (MRM downscaling parameters)
+    archetype_weights: tuple = (0.15, 0.70, 0.12, 0.03)  # retail_heavy, retail_standard, micro_merchant, corporate_sme
 
 
 class StratifiedProfileGenerator:
@@ -341,6 +353,13 @@ class StratifiedProfileGenerator:
         account_ages = self._generate_account_age(n)
         initial_balances = self._generate_initial_balance(n, balance_limits)
         
+        # Assign archetypes based on MRM downscaling parameters
+        archetype_enum_list = list(CustomerArchetype)
+        archetype_weights = self.config.archetype_weights
+        # Use numpy random choice for reproducibility via self._rng
+        indices = self._rng.choice(len(archetype_enum_list), size=n, p=archetype_weights)
+        archetypes = [archetype_enum_list[idx] for idx in indices]
+
         # Create customer profiles
         profiles = []
         for i in range(n):
@@ -356,7 +375,8 @@ class StratifiedProfileGenerator:
                 betting_platform_flag=betting_flags[i],
                 international_transaction_flag=international_flags[i],
                 account_age_days=account_ages[i],
-                initial_balance=initial_balances[i]
+                initial_balance=initial_balances[i],
+                archetype=archetypes[i]
             )
             profiles.append(profile)
         
@@ -367,6 +387,10 @@ class StratifiedProfileGenerator:
             f"KYC tiers: T1={np.mean([p.kyc_tier == KYCTier.TIER_1 for p in profiles]):.2%}, "
             f"T2={np.mean([p.kyc_tier == KYCTier.TIER_2 for p in profiles]):.2%}, "
             f"T3={np.mean([p.kyc_tier == KYCTier.TIER_3 for p in profiles]):.2%}. "
+            f"Archetypes: RH={np.mean([p.archetype == CustomerArchetype.RETAIL_HEAVY for p in profiles]):.2%}, "
+            f"RS={np.mean([p.archetype == CustomerArchetype.RETAIL_STANDARD for p in profiles]):.2%}, "
+            f"MM={np.mean([p.archetype == CustomerArchetype.MICRO_MERCHANT for p in profiles]):.2%}, "
+            f"CS={np.mean([p.archetype == CustomerArchetype.CORPORATE_SME for p in profiles]):.2%}. "
             f"Risk flags: Betting={np.mean([p.betting_platform_flag for p in profiles]):.2%}, "
             f"International={np.mean([p.international_transaction_flag for p in profiles]):.2%}."
         )
@@ -396,6 +420,7 @@ class StratifiedProfileGenerator:
             "international_transaction_flag": [bool(p.international_transaction_flag) for p in profiles],
             "account_age_days": [p.account_age_days for p in profiles],
             "initial_balance_kes": [p.initial_balance for p in profiles],
+            "archetype": [p.archetype.value if isinstance(p.archetype, CustomerArchetype) else str(p.archetype) for p in profiles],
         }
         
         df = pl.DataFrame(data)
@@ -414,6 +439,7 @@ class StratifiedProfileGenerator:
             "international_transaction_flag": pl.Boolean,
             "account_age_days": pl.Int32,
             "initial_balance_kes": pl.Float64,
+            "archetype": pl.String,
         }
         
         df = df.cast(schema)
@@ -465,6 +491,7 @@ def main():
     print(f"\nCounty distribution (top 10):\n{df['county'].value_counts().head(10)}")
     print(f"\nKYC tier distribution:\n{df['kyc_tier'].value_counts()}")
     print(f"\nUrban/Rural distribution:\n{df['urban_rural_classification'].value_counts()}")
+    print(f"\nArchetype distribution:\n{df['archetype'].value_counts()}")
     print(f"\nRisk flags:")
     print(f"Betting platform users: {df['betting_platform_flag'].sum()} ({df['betting_platform_flag'].mean():.2%})")
     print(f"International transaction users: {df['international_transaction_flag'].sum()} ({df['international_transaction_flag'].mean():.2%})")
