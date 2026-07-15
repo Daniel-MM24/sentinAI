@@ -57,10 +57,9 @@ CONFIG = {
     'n_customers': 1000,
     'n_transactions': 10000,
     'data_dir': 'data',
-    'profiles_path': 'data/bronze/customers/customer_profiles_complete.csv',
+    'profiles_path': 'data/customers_metadata.csv',
     'tx_path': 'data/detailed_transactions.csv',
     'truth_path': 'data/aml_ground_truth.csv',
-    'temporal_path': 'data/temporal_features.csv'
 }
 
 print('Configuration loaded')
@@ -98,27 +97,14 @@ print(f'\\nAML Scenarios:\\n{df_truth["aml_scenario"].value_counts()}')
 print(f'\\nFirst 5 rows:')
 df_truth.head()""")
 
-code("""# Load Temporal Features
-df_temporal = pd.read_csv(CONFIG['temporal_path'])
-print('\\n=== TEMPORAL FEATURES ===')
-print(f'Shape: {df_temporal.shape}')
-print(f'\\nColumns & Types:\\n{df_temporal.dtypes}')
-print(f'\\nMissing Values (%):\\n{(df_temporal.isnull().sum() / len(df_temporal) * 100).round(2)}')
-print(f'\\nDuplicate Rows: {df_temporal.duplicated().sum()}')
-print(f'\\nFirst 5 rows:')
-df_temporal.head()""")
-
 code("""# Cross-validation: Check row counts match
 print('\\n=== VALIDATION: ROW COUNT ALIGNMENT ===')
 print(f'Profiles: {len(df_profiles)}')
 print(f'Transactions: {len(df_transactions)}')
 print(f'Ground Truth: {len(df_truth)}')
-print(f'Temporal: {len(df_temporal)}')
 
-print(f'\\nUnique customers in profiles: {df_profiles["customer_id"].nunique()}')
-print(f'Unique customers in transactions: {df_transactions["customer_id"].nunique()}')
-print(f'Unique users in ground truth: {df_truth["user_id"].nunique()}')
-print(f'Unique users in temporal: {df_temporal["user_id"].nunique()}')""")
+print(f'\\nUnique customers in transactions: {df_transactions["customer_id"].nunique()}')
+print(f'Unique users in ground truth: {df_truth["user_id"].nunique()}')""")
 
 code("""# Parse transaction timestamp
 df_transactions['timestamp'] = pd.to_datetime(df_transactions['timestamp'])
@@ -134,14 +120,14 @@ Analyze customer demographics, tiers, archetypes, and flags.""")
 
 code("""# Tier Distribution
 print('\\n=== TIER DISTRIBUTION ===')
-tier_counts = df_profiles['kyc_tier'].value_counts(normalize=True) * 100
+tier_counts = df_profiles['tier'].value_counts(normalize=True) * 100
 print(tier_counts.round(2))
 
 fig, ax = plt.subplots(figsize=(8, 6))
 colors = plt.cm.Set2(range(len(tier_counts)))
 wedges, texts, autotexts = ax.pie(tier_counts.values, labels=tier_counts.index, 
                                     autopct='%1.1f%%', colors=colors, startangle=90)
-ax.set_title('KYC Tier Distribution', fontsize=14, fontweight='bold')
+ax.set_title('Tier Distribution', fontsize=14, fontweight='bold')
 plt.tight_layout()
 plt.show()
 
@@ -158,67 +144,54 @@ for tier, pct in tier_counts.items():
     status = '✅' if diff <= 5 else '⚠️'
     print(f'{status} {tier}: {pct:.1f}% (expected ~{expected}%, diff={diff:.1f}%)')""")
 
-code("""# Age Distribution
-print('\\n=== AGE STATISTICS ===')
-print(f'Mean: {df_profiles["age"].mean():.1f}')
-print(f'Median: {df_profiles["age"].median():.1f}')
-print(f'Min: {df_profiles["age"].min()}')
-print(f'Max: {df_profiles["age"].max()}')
+code("""# Account Age Distribution
+print('\\n=== ACCOUNT AGE STATISTICS ===')
+print(f'Mean: {df_profiles["tier"].mean():.1f} days')
+print(f'Median: {df_profiles["tier"].median():.1f} days')
+print(f'Min: {df_profiles["tier"].min()} days')
+print(f'Max: {df_profiles["tier"].max()} days')
 
 fig, ax = plt.subplots(figsize=(12, 6))
-ax.hist(df_profiles['age'], bins=30, alpha=0.7, color='skyblue', edgecolor='black')
-ax.axvline(df_profiles['age'].mean(), color='red', linestyle='--', linewidth=2, label=f'Mean: {df_profiles["age"].mean():.1f}')
-ax.axvline(df_profiles['age'].median(), color='green', linestyle='--', linewidth=2, label=f'Median: {df_profiles["age"].median():.1f}')
-ax.set_xlabel('Age', fontsize=12)
+ax.hist(df_profiles['tier'], bins=30, alpha=0.7, color='coral', edgecolor='black')
+ax.axvline(df_profiles['tier'].mean(), color='red', linestyle='--', linewidth=2, label=f'Mean: {df_profiles["tier"].mean():.1f}')
+ax.axvline(df_profiles['tier'].median(), color='green', linestyle='--', linewidth=2, label=f'Median: {df_profiles["tier"].median():.1f}')
+ax.set_xlabel('Account Age (days)', fontsize=12)
 ax.set_ylabel('Count', fontsize=12)
-ax.set_title('Age Distribution', fontsize=14, fontweight='bold')
+ax.set_title('Account Age Distribution', fontsize=14, fontweight='bold')
 ax.legend()
 plt.tight_layout()
 plt.show()""")
 
-code("""# Gender Distribution
-print('\\n=== GENDER DISTRIBUTION ===')
-gender_counts = df_profiles['gender'].value_counts()
-gender_pct = df_profiles['gender'].value_counts(normalize=True) * 100
-print(gender_pct.round(2))
+code("""# Tier Distribution
+print('\\n=== KYC TIER DISTRIBUTION ===')
+kyc_counts = df_profiles['tier'].value_counts().sort_index()
+kyc_pct = df_profiles['tier'].value_counts(normalize=True).sort_index() * 100
+kyc_df = pd.DataFrame({'count': kyc_counts, 'pct': kyc_pct.round(2)})
+print(kyc_df)
 
-fig, ax = plt.subplots(figsize=(8, 6))
-colors = ['#FF69B4', '#4169E1']
-ax.bar(gender_counts.index, gender_counts.values, color=colors, edgecolor='black', alpha=0.7)
+fig, ax = plt.subplots(figsize=(10, 6))
+colors_k = ['#2ecc71', '#3498db', '#f39c12', '#e74c3c']
+ax.bar(kyc_counts.index.astype(str), kyc_counts.values, color=colors_k, edgecolor='black', alpha=0.7)
 ax.set_ylabel('Count', fontsize=12)
-ax.set_title('Gender Distribution', fontsize=14, fontweight='bold')
-for i, v in enumerate(gender_counts.values):
-    ax.text(i, v + 10, f'{gender_pct.iloc[i]:.1f}%', ha='center', fontweight='bold')
+ax.set_title('Tier Distribution', fontsize=14, fontweight='bold')
+for i, v in enumerate(kyc_counts.values):
+    ax.text(i, v + 5, f'{kyc_pct.iloc[i]:.1f}%', ha='center', fontweight='bold')
 plt.tight_layout()
 plt.show()""")
 
-code("""# Top 10 Counties
-print('\\n=== TOP 10 COUNTIES ===')
-top_counties = df_profiles['county'].value_counts().head(10)
-print(top_counties)
+code("""# Tier Distribution
+print('\\n=== WALLET TIER DISTRIBUTION ===')
+wallet_counts = df_profiles['tier'].value_counts()
+wallet_pct = df_profiles['tier'].value_counts(normalize=True) * 100
+print(wallet_pct.round(2))
 
-fig, ax = plt.subplots(figsize=(12, 6))
-ax.barh(range(len(top_counties)), top_counties.values, color='teal', alpha=0.7, edgecolor='black')
-ax.set_yticks(range(len(top_counties)))
-ax.set_yticklabels(top_counties.index)
-ax.set_xlabel('Count', fontsize=12)
-ax.set_title('Top 10 Counties', fontsize=14, fontweight='bold')
-for i, v in enumerate(top_counties.values):
-    ax.text(v + 5, i, str(v), va='center', fontweight='bold')
-plt.tight_layout()
-plt.show()""")
-
-code("""# Urban vs Rural
-print('\\n=== URBAN vs RURAL CLASSIFICATION ===')
-urban_rural = df_profiles['urban_rural_classification'].value_counts()
-urban_rural_pct = df_profiles['urban_rural_classification'].value_counts(normalize=True) * 100
-print(urban_rural_pct.round(2))
-
-fig, ax = plt.subplots(figsize=(8, 6))
-colors = ['#90EE90', '#FFB6C1']
-wedges, texts, autotexts = ax.pie(urban_rural.values, labels=urban_rural.index,
-                                    autopct='%1.1f%%', colors=colors, startangle=90)
-ax.set_title('Urban vs Rural Classification', fontsize=14, fontweight='bold')
+fig, ax = plt.subplots(figsize=(10, 6))
+colors_w = ['#2ecc71', '#3498db', '#f39c12', '#e74c3c']
+ax.bar(wallet_counts.index, wallet_counts.values, color=colors_w, edgecolor='black', alpha=0.7)
+ax.set_ylabel('Count', fontsize=12)
+ax.set_title('Tier Distribution', fontsize=14, fontweight='bold')
+for i, v in enumerate(wallet_counts.values):
+    ax.text(i, v + 5, f'{wallet_pct.iloc[i]:.1f}%', ha='center', fontweight='bold')
 plt.tight_layout()
 plt.show()""")
 
@@ -241,15 +214,15 @@ plt.show()""")
 
 code("""# Account Age
 print('\\n=== ACCOUNT AGE STATISTICS ===')
-print(f'Mean: {df_profiles["account_age_days"].mean():.1f} days')
-print(f'Median: {df_profiles["account_age_days"].median():.1f} days')
-print(f'Min: {df_profiles["account_age_days"].min()} days')
-print(f'Max: {df_profiles["account_age_days"].max()} days')
+print(f'Mean: {df_profiles["tier"].mean():.1f} days')
+print(f'Median: {df_profiles["tier"].median():.1f} days')
+print(f'Min: {df_profiles["tier"].min()} days')
+print(f'Max: {df_profiles["tier"].max()} days')
 
 fig, ax = plt.subplots(figsize=(12, 6))
-ax.hist(df_profiles['account_age_days'], bins=30, alpha=0.7, color='coral', edgecolor='black')
-ax.axvline(df_profiles['account_age_days'].mean(), color='red', linestyle='--', linewidth=2, label=f'Mean: {df_profiles["account_age_days"].mean():.1f}')
-ax.axvline(df_profiles['account_age_days'].median(), color='green', linestyle='--', linewidth=2, label=f'Median: {df_profiles["account_age_days"].median():.1f}')
+ax.hist(df_profiles['tier'], bins=30, alpha=0.7, color='coral', edgecolor='black')
+ax.axvline(df_profiles['tier'].mean(), color='red', linestyle='--', linewidth=2, label=f'Mean: {df_profiles["tier"].mean():.1f}')
+ax.axvline(df_profiles['tier'].median(), color='green', linestyle='--', linewidth=2, label=f'Median: {df_profiles["tier"].median():.1f}')
 ax.set_xlabel('Account Age (days)', fontsize=12)
 ax.set_ylabel('Count', fontsize=12)
 ax.set_title('Account Age Distribution', fontsize=14, fontweight='bold')
@@ -289,7 +262,7 @@ tier_limits = {
 }
 
 for tier, (tx_limit, bal_limit) in tier_limits.items():
-    tier_data = df_profiles[df_profiles['kyc_tier'] == tier]
+    tier_data = df_profiles[df_profiles['tier'] == tier]
     max_tx = tier_data['max_transaction_limit_kes'].max()
     max_bal = tier_data['max_balance_limit_kes'].max()
     tx_status = '✅' if max_tx <= tx_limit else '⚠️'
@@ -347,8 +320,8 @@ print(kadogo_by_archetype.round(2))""")
 
 code("""# Max Transaction per Tier
 print('\\n=== MAX TRANSACTION AMOUNT PER TIER ===')
-tx_by_tier = df_transactions.merge(df_profiles[['customer_id', 'kyc_tier']], on='customer_id', how='left')
-max_tx_per_tier = tx_by_tier.groupby('kyc_tier')['amount'].max()
+tx_by_tier = df_transactions.merge(df_profiles[['customer_id', 'tier']], on='customer_id', how='left')
+max_tx_per_tier = tx_by_tier.groupby('tier')['amount'].max()
 print(max_tx_per_tier.round(2))
 
 tier_limits_tx = {'tier_1': 500000, 'tier_2': 250000, 'tier_3': 100000}
@@ -361,7 +334,7 @@ for tier in ['tier_1', 'tier_2', 'tier_3']:
 
 code("""# Max Balance per Tier
 print('\\n=== MAX BALANCE PER TIER ===')
-max_bal_per_tier = tx_by_tier.groupby('kyc_tier')['balance_after'].max()
+max_bal_per_tier = tx_by_tier.groupby('tier')['balance_after'].max()
 print(max_bal_per_tier.round(2))
 
 tier_limits_bal = {'tier_1': 1000000, 'tier_2': 500000, 'tier_3': 200000}
@@ -518,37 +491,35 @@ md("""## Section 5: Geographic Patterns
 
 Analyze customer and transaction locations.""")
 
-code("""# Top 15 Counties
-print('\\n=== TOP 15 COUNTIES BY TRANSACTION VOLUME ===')
-merged_geo = df_transactions.merge(df_profiles[['customer_id', 'county']], on='customer_id', how='left')
-county_tx_counts = merged_geo['county'].value_counts().head(15)
-print(county_tx_counts)
+code("""# Top 15 Sender Regions by Transaction Volume
+print('\\n=== TOP 15 SENDER REGIONS BY TRANSACTION VOLUME ===')
+region_tx_counts = df_transactions['sender_county'].value_counts().head(15)
+print(region_tx_counts)
 
 fig, ax = plt.subplots(figsize=(12, 8))
-ax.barh(range(len(county_tx_counts)), county_tx_counts.values, color='teal', edgecolor='black', alpha=0.7)
-ax.set_yticks(range(len(county_tx_counts)))
-ax.set_yticklabels(county_tx_counts.index)
+ax.barh(range(len(region_tx_counts)), region_tx_counts.values, color='teal', edgecolor='black', alpha=0.7)
+ax.set_yticks(range(len(region_tx_counts)))
+ax.set_yticklabels(region_tx_counts.index)
 ax.set_xlabel('Transaction Count', fontsize=12)
-ax.set_title('Top 15 Counties by Transaction Volume', fontsize=14, fontweight='bold')
-for i, v in enumerate(county_tx_counts.values):
+ax.set_title('Top 15 Sender Regions by Transaction Volume', fontsize=14, fontweight='bold')
+for i, v in enumerate(region_tx_counts.values):
     ax.text(v + 20, i, str(v), va='center', fontweight='bold')
 plt.tight_layout()
 plt.show()""")
 
-code("""# Urban vs Rural Transaction Volume
-print('\\n=== URBAN vs RURAL TRANSACTION VOLUME ===')
-merged_urb = df_transactions.merge(df_profiles[['customer_id', 'urban_rural_classification']], on='customer_id', how='left')
-urban_rural_tx = merged_urb['urban_rural_classification'].value_counts()
-urban_rural_tx_pct = merged_urb['urban_rural_classification'].value_counts(normalize=True) * 100
-print(urban_rural_tx)
-print(f'\\nPercentages:\\n{urban_rural_tx_pct.round(2)}')
+code("""# Top 15 Receiver Regions by Transaction Volume
+print('\\n=== TOP 15 RECEIVER REGIONS BY TRANSACTION VOLUME ===')
+receiver_region_counts = df_transactions['receiver_county'].value_counts().head(15)
+print(receiver_region_counts)
 
-fig, ax = plt.subplots(figsize=(8, 6))
-ax.bar(urban_rural_tx.index, urban_rural_tx.values, color=['#90EE90', '#FFB6C1'], edgecolor='black', alpha=0.7)
-ax.set_ylabel('Transaction Count', fontsize=12)
-ax.set_title('Transaction Volume: Urban vs Rural', fontsize=14, fontweight='bold')
-for i, v in enumerate(urban_rural_tx.values):
-    ax.text(i, v + 100, f'{urban_rural_tx_pct.iloc[i]:.1f}%', ha='center', fontweight='bold')
+fig, ax = plt.subplots(figsize=(12, 8))
+ax.barh(range(len(receiver_region_counts)), receiver_region_counts.values, color='purple', edgecolor='black', alpha=0.7)
+ax.set_yticks(range(len(receiver_region_counts)))
+ax.set_yticklabels(receiver_region_counts.index)
+ax.set_xlabel('Transaction Count', fontsize=12)
+ax.set_title('Top 15 Receiver Regions by Transaction Volume', fontsize=14, fontweight='bold')
+for i, v in enumerate(receiver_region_counts.values):
+    ax.text(v + 20, i, str(v), va='center', fontweight='bold')
 plt.tight_layout()
 plt.show()""")
 
@@ -575,8 +546,8 @@ plt.show()""")
 
 code("""# Betting Users
 print('\\n=== BETTING BEHAVIOR ===')
-betting_users = df_profiles['betting_platform_flag'].sum()
-betting_user_ids = df_profiles[df_profiles['betting_platform_flag'] == 1]['customer_id'].values
+# betting platform flag no longer in profiles
+# betting_user_ids = df_profiles[df_profiles['tier'] == 4]['customer_id'].values  # placeholder
 betting_tx_count = df_transactions[df_transactions['customer_id'].isin(betting_user_ids)].shape[0]
 
 print(f'Total betting-flagged users: {betting_users}')
@@ -824,7 +795,7 @@ readiness = {
     'Customer demographics': f'{len(df_profiles.columns)} features ✅',
     'Transaction history': f'{tx_per_user.mean():.0f} txns/user avg ✅',
     'Temporal patterns': 'Hourly, daily, weekly ✅',
-    'Geographic data': f'{df_profiles["county"].nunique()} counties ✅',
+    'Geographic data': f'{df_transactions["sender_county"].nunique()} sender regions ✅',
     'AML scenarios labeled': f'{df_truth["aml_scenario"].nunique()} scenarios ✅',
     'Time coverage': f'{days_covered} days ✅',
     'Class balance': f'2% vs 98% (imbalanced but realistic) ⚠️'
@@ -848,10 +819,9 @@ summary = {
         'time_period_days': days_covered
     },
     'customer_profiles': {
-        'age_mean': float(df_profiles['age'].mean()),
-        'age_range': [int(df_profiles['age'].min()), int(df_profiles['age'].max())],
-        'gender_split': {'male': int((df_profiles['gender'] == 'Male').sum()), 'female': int((df_profiles['gender'] == 'Female').sum())},
-        'tier_distribution': df_profiles['kyc_tier'].value_counts().to_dict(),
+        'account_age_mean_days': float(df_profiles['tier'].mean()),
+        'tier_distribution': df_profiles['tier'].value_counts().to_dict(),
+        'tier_distribution': df_profiles['tier'].value_counts().to_dict(),
         'archetype_distribution': df_profiles['archetype'].value_counts().to_dict()
     },
     'transaction_patterns': {
@@ -974,7 +944,7 @@ nb.cells = cells
 
 # Save notebook
 os.makedirs('obsidian_notes/notebooks', exist_ok=True)
-notebook_path = 'obsidian_notes/notebooks/01_data_quality_eda.ipynb'
+notebook_path = 'obsidian_notes/08_Notebooks/02_data_quality_eda.ipynb'
 with open(notebook_path, 'w') as f:
     nbf.write(nb, f)
 

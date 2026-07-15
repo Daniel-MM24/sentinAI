@@ -247,17 +247,25 @@ class AnomalyDetectionConfig(BaseModel):
     amount_spike_multiplier: float = Field(..., gt=0.0)
     smurfing_max_amount_kes: float = Field(..., gt=0.0)
     smurfing_min_daily_count: int = Field(..., ge=1)
-    round_number_modulus: int = Field(..., ge=1)
+    smurfing_min_window_minutes: int = Field(..., ge=1)
+    round_number_modulus: float = Field(..., gt=0.0)
     round_number_min_daily_count: int = Field(..., ge=1)
+    velocity_max_tx_per_day: int = Field(..., ge=1)
+    velocity_max_daily_volume_kes: float = Field(..., gt=0.0)
+    rapid_credit_debit_window_minutes: int = Field(..., ge=1)
+    rapid_credit_debit_min_tx_count: int = Field(..., ge=1)
+    amount_anomaly_z_score_threshold: float = Field(..., gt=0.0)
 
 
 class DeadLetterConfig(BaseModel):
     """Dead-letter queue configuration for regulatory rejects."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(frozen=True)
 
     enabled: bool = True
+    max_retries: int = 3
     output_path: str = "data/dead_letter/bronze_rejects"
+    storage_path: str = "data/dead_letter"
 
 
 class RegulatoryConfig(BaseModel):
@@ -392,8 +400,10 @@ def validate_regulatory_constraints(
         .then(pl.lit(caps["TIER_1"]))
         .when(pl.col("kyc_tier_level") == "TIER_2")
         .then(pl.lit(caps["TIER_2"]))
-        .when(pl.col("kyc_tier_level") == "VENDOR_MERCHANT")
-        .then(pl.lit(caps["VENDOR_MERCHANT"]))
+        .when(pl.col("kyc_tier_level") == "TIER_3")
+        .then(pl.lit(caps["TIER_3"]))
+        .when(pl.col("kyc_tier_level") == "TIER_4")
+        .then(pl.lit(caps["TIER_4"]))
         .otherwise(pl.lit(caps["TIER_1"]))
     )
 

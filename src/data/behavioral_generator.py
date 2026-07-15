@@ -79,12 +79,13 @@ class CustomerState:
 
 # ---------------------------------------------------------------------------
 # Per-archetype log-normal params for transaction values
-# ---------------------------------------------------------------------------# Tier-specific daily velocity caps (KES)
+# ---------------------------------------------------------------------------
+# Tier-specific daily velocity caps (KES) — CBK PG/43 cumulative daily limits per tier
 _DAILY_VELOCITY_CAPS: dict[int, float] = {
-    1: 70_000.0,
-    2: 150_000.0,
-    3: 250_000.0,
-    4: 1_000_000.0,
+    1: 25_000.0,       # CBK Tier 1: KES 25,000 daily max
+    2: 100_000.0,      # CBK Tier 2: KES 100,000 daily max
+    3: 500_000.0,      # CBK Tier 3: KES 500,000 daily max
+    4: 10_000_000.0,   # CBK Tier 4 (EDD): no regulatory cap — set high as soft boundary
 }
 
 # Per-archetype log-normal params
@@ -97,6 +98,15 @@ _ARCHETYPE_AMOUNT_PARAMS: dict[str, dict[str, float]] = {
 
 
 class BehavioralGeneratorConfig(BaseModel):
+    """Configuration for the behavioral transaction generator.
+
+    CBK-aligned tier limits (PG/43 guidelines):
+      Tier 1 (Basic):       tx ≤ KES 10K,   daily ≤ KES 25K,   balance ≤ KES 50K
+      Tier 2 (Interim):     tx ≤ KES 50K,   daily ≤ KES 100K,  balance ≤ KES 200K
+      Tier 3 (Full KYC):    tx ≤ KES 150K,  daily ≤ KES 500K,  balance ≤ KES 1M
+      Tier 4 (EDD):         tx ≤ KES 500K,  daily ≤ KES 10M*,  balance ≤ KES 5M*
+      * Tier 4 (EDD) has no regulatory caps — these are soft boundaries.
+    """
     transaction_type_probs: Dict[str, float] = Field(
         default={
             TransactionType.SEND_MONEY.value: 0.25,
@@ -117,13 +127,21 @@ class BehavioralGeneratorConfig(BaseModel):
     kadogo_merchant_threshold: float = 200.0
     tier_caps: Dict[int, float] = Field(
         default={
-            1: 70_000.0,
-            2: 150_000.0,
-            3: 250_000.0,
-            4: 1_000_000.0,
+            1: 10_000.0,       # CBK Tier 1: max single tx KES 10,000
+            2: 50_000.0,       # CBK Tier 2: max single tx KES 50,000
+            3: 150_000.0,      # CBK Tier 3: max single tx KES 150,000
+            4: 500_000.0,      # CBK Tier 4 (EDD): max single tx KES 500,000
         }
     )
     daily_velocity_caps: Dict[int, float] = Field(default_factory=lambda: dict(_DAILY_VELOCITY_CAPS))
+    balance_caps: Dict[int, float] = Field(
+        default={
+            1: 50_000.0,
+            2: 200_000.0,
+            3: 1_000_000.0,
+            4: 5_000_000.0,
+        }
+    )
     max_rejection_attempts: int = 100
     look_ahead_window: int = 5
     seed: int = 42
@@ -185,7 +203,7 @@ class BehavioralTransactionGenerator:
                     customer_id=row["customer_id"],
                     tier=tier,
                     tier_cap=float(row["max_transaction_limit_kes"]),
-                    balance_cap=float(row["max_balance_limit_kes"]),
+                    balance_cap=float(row.get("max_balance_limit_kes", self.config.balance_caps.get(tier, self.config.balance_caps[1]))),
                     balance=opening,
                     betting_flag=bool(row["betting_platform_flag"]),
                     international_flag=bool(row["international_transaction_flag"]),
@@ -199,7 +217,7 @@ class BehavioralTransactionGenerator:
             customer_ids = [f"CUST_{i:06d}" for i in range(self.config.num_customers)]
             low, high = self.config.initial_balance_range
             initial_balances = self.rng.uniform(low, high, size=self.config.num_customers)
-            tiers = self.rng.integers(1, 4, size=self.config.num_customers)
+            tiers = self.rng.choice([1, 2, 3, 4], size=self.config.num_customers, p=[0.60, 0.20, 0.15, 0.05])
             archetypes_pool = ["retail_standard", "retail_heavy", "micro_merchant", "corporate"]
             archetype_weights = [0.70, 0.15, 0.12, 0.03]
             chosen = self.rng.choice(archetypes_pool, size=self.config.num_customers, p=archetype_weights)
@@ -210,7 +228,7 @@ class BehavioralTransactionGenerator:
                     customer_id=customer_id,
                     tier=tier,
                     tier_cap=self.config.tier_caps.get(tier, self.config.tier_caps[1]),
-                    balance_cap=self.config.tier_caps.get(tier, self.config.tier_caps[1]) * 5,
+                    balance_cap=self.config.balance_caps.get(tier, self.config.balance_caps[1]),
                     balance=opening,
                     betting_flag=False,
                     international_flag=False,
@@ -419,7 +437,7 @@ class BehavioralTransactionGenerator:
 
         # Check daily velocity cap for outflows
         if direction == FlowDirection.OUTFLOW:
-            daily_cap = self.config.daily_velocity_caps.get(customer.tier, 250_000.0)
+            daily_cap = self.config.daily_velocity_caps.get(customer.tier, 1_000_000.0)
             if customer.daily_outflow_total + amount > daily_cap:
                 return None
 
@@ -478,7 +496,7 @@ class BehavioralTransactionGenerator:
 
             ft_daily = temp_daily_outflow
             if adjusted["direction"] == FlowDirection.OUTFLOW:
-                daily_cap = self.config.daily_velocity_caps.get(customer.tier, 250_000.0)
+                daily_cap = self.config.daily_velocity_caps.get(customer.tier, 1_000_000.0)
                 if ft_daily + adjusted["amount"] > daily_cap:
                     continue
                 ft_daily += adjusted["amount"]
@@ -510,7 +528,7 @@ class BehavioralTransactionGenerator:
                     ok = False
                     break
                 if plan["direction"] == FlowDirection.OUTFLOW:
-                    daily_cap = self.config.daily_velocity_caps.get(customer.tier, 250_000.0)
+                    daily_cap = self.config.daily_velocity_caps.get(customer.tier, 1_000_000.0)
                     if ft_daily + plan["amount"] > daily_cap:
                         ok = False
                         break

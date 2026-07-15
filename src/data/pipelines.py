@@ -367,8 +367,10 @@ class BronzeToSilverPipeline:
             .then(pl.lit(caps["TIER_1"]))
             .when(pl.col("kyc_tier_level") == "TIER_2")
             .then(pl.lit(caps["TIER_2"]))
-            .when(pl.col("kyc_tier_level") == "VENDOR_MERCHANT")
-            .then(pl.lit(caps["VENDOR_MERCHANT"]))
+            .when(pl.col("kyc_tier_level") == "TIER_3")
+            .then(pl.lit(caps["TIER_3"]))
+            .when(pl.col("kyc_tier_level") == "TIER_4")
+            .then(pl.lit(caps["TIER_4"]))
             .otherwise(pl.lit(caps["TIER_1"]))
         )
 
@@ -380,8 +382,10 @@ class BronzeToSilverPipeline:
             .then(pl.lit(caps["TIER_1"]))
             .when(pl.col("kyc_tier_level") == "TIER_2")
             .then(pl.lit(caps["TIER_2"]))
-            .when(pl.col("kyc_tier_level") == "VENDOR_MERCHANT")
-            .then(pl.lit(caps["VENDOR_MERCHANT"]))
+            .when(pl.col("kyc_tier_level") == "TIER_3")
+            .then(pl.lit(caps["TIER_3"]))
+            .when(pl.col("kyc_tier_level") == "TIER_4")
+            .then(pl.lit(caps["TIER_4"]))
             .otherwise(pl.lit(caps["TIER_1"]))
         )
 
@@ -815,9 +819,6 @@ def aml_silver_to_feature_store_inputs(
         c
         for c in (
             "customer_id",
-            "customer_name",
-            "email",
-            "tax_id",
             "device_age_days",
             "sim_match_status",
             "wallet_tier_encoded",

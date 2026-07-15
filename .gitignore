@@ -37,6 +37,7 @@ chroma_db/
 vector_store/
 
 # Data & Logs
+/data/*.csv
 /data/*.duckdb
 /data/*.db
 /data/*.parquet
@@ -151,3 +152,10 @@ config/agents/openrouter_models.yaml
 docs
 
 parquet.py
+
+# agent environment
+agent-env/
+
+# agent instructions
+CLAUDE.md
+

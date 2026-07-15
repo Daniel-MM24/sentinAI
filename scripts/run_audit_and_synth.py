@@ -70,6 +70,24 @@ def main() -> None:
     logger.info("Silver transactions: %s", result["silver"].transaction_count)
     logger.info("Gold feature store: %s", result["gold"].gold_uri)
 
+    # Export detailed_transactions.csv for the EDA notebook
+    try:
+        import pandas as pd
+        silver_tx_dir = Path("data/silver")
+        silver_tx_files = sorted(silver_tx_dir.glob("silver_transactions_*.parquet"))
+        if silver_tx_files:
+            df_tx = pd.read_parquet(silver_tx_files[-1])
+            df_tx.to_csv("data/detailed_transactions.csv", index=False)
+            logger.info("Exported %d transactions to data/detailed_transactions.csv", len(df_tx))
+
+        silver_cust_files = sorted(silver_tx_dir.glob("silver_customers_*.parquet"))
+        if silver_cust_files:
+            df_cust = pd.read_parquet(silver_cust_files[-1])
+            df_cust.to_csv("data/customers_metadata.csv", index=False)
+            logger.info("Exported %d customers to data/customers_metadata.csv", len(df_cust))
+    except Exception:
+        logger.warning("Failed to export CSVs for EDA notebook", exc_info=True)
+
     if openlineage_url:
         logger.info("View lineage DAG in Marquez UI: http://localhost:3001")
 

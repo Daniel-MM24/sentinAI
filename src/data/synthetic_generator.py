@@ -47,10 +47,11 @@ class CustomerArchetype(Enum):
 
 
 class WalletTier(Enum):
-    """Regulatory wallet tiers with transaction and balance limits (CBK guidelines)."""
-    TIER_1 = "tier_1"  # Max single: KES 70,000, Max balance: KES 300,000
-    TIER_2 = "tier_2"  # Max single: KES 150,000, Max balance: KES 500,000
-    TIER_3 = "tier_3"  # Max single: KES 250,000, Max balance: KES 500,000
+    """Regulatory wallet tiers with transaction and balance limits (CBK PG/43 guidelines)."""
+    TIER_1 = "tier_1"  # Basic: Max single: KES 10,000, Max balance: KES 50,000
+    TIER_2 = "tier_2"  # Interim: Max single: KES 50,000, Max balance: KES 200,000
+    TIER_3 = "tier_3"  # Full KYC: Max single: KES 150,000, Max balance: KES 1,000,000
+    TIER_4 = "tier_4"  # EDD: Max single: KES 500,000, Max balance: KES 5,000,000
 
 
 @dataclass
@@ -79,6 +80,10 @@ class CustomerProfile:
     sim_match_status: bool = True
     wallet_tier: WalletTier = WalletTier.TIER_1  # Updated to use WalletTier enum
     prev_fraud_flag_count_90d: int = 0
+
+    # Encoded variants for Silver/Gold schemas
+    wallet_tier_encoded: int = 0
+    kyc_level_encoded: int = 0
     
     # Rolling window state
     daily_balances: deque = field(default_factory=lambda: deque(maxlen=30))
@@ -709,27 +714,27 @@ class AMLGenerator:
     def _assign_wallet_tier(self, archetype: CustomerArchetype) -> WalletTier:
         """
         Assign regulatory wallet tier based on customer archetype.
-        
+
         Args:
             archetype: Customer archetype
-            
+
         Returns:
             WalletTier enum value
         """
-        # Tier assignment logic based on archetype patterns
+        # Tier assignment logic based on archetype patterns (CBK PG/43 alignment)
         if archetype == CustomerArchetype.CORPORATE_SME:
-            # Corporate/SMEs typically get Tier 3 for high-value transactions
-            tier_probs = [0.1, 0.3, 0.6]  # Higher probability for Tier 3
+            # Corporate/SMEs typically get Tier 3 or 4 for high-value transactions
+            tier_probs = [0.05, 0.15, 0.50, 0.30]
         elif archetype == CustomerArchetype.MICRO_MERCHANT:
-            # Micro-merchants typically Tier 2
-            tier_probs = [0.2, 0.6, 0.2]
+            # Micro-merchants typically Tier 2-3
+            tier_probs = [0.10, 0.55, 0.30, 0.05]
         elif archetype == CustomerArchetype.RETAIL_HEAVY:
             # Heavy retail users mixed Tier 1/2
-            tier_probs = [0.4, 0.5, 0.1]
+            tier_probs = [0.35, 0.50, 0.12, 0.03]
         else:  # RETAIL_STANDARD
             # Standard retail mostly Tier 1
-            tier_probs = [0.7, 0.25, 0.05]
-        
+            tier_probs = [0.70, 0.20, 0.08, 0.02]
+
         tiers = list(WalletTier)
         tier = self._rng.choice(tiers, p=tier_probs)
         return tier
@@ -746,12 +751,13 @@ class AMLGenerator:
             Balance clipped to tier limit
         """
         tier_limits = {
-            WalletTier.TIER_1: 300000.0,  # KES
-            WalletTier.TIER_2: 500000.0,  # KES
-            WalletTier.TIER_3: 500000.0,  # KES
+            WalletTier.TIER_1: 50_000.0,     # CBK Tier 1: max wallet KES 50,000
+            WalletTier.TIER_2: 200_000.0,    # CBK Tier 2: max wallet KES 200,000
+            WalletTier.TIER_3: 1_000_000.0,  # CBK Tier 3: max wallet KES 1,000,000
+            WalletTier.TIER_4: 5_000_000.0,  # CBK Tier 4 (EDD): no cap — soft limit
         }
-        
-        max_balance = tier_limits[tier]
+
+        max_balance = tier_limits.get(tier, 50_000.0)
         return min(balance, max_balance)
     
     def _enforce_transaction_cap(self, amount: float, tier: WalletTier) -> float:
@@ -766,12 +772,13 @@ class AMLGenerator:
             Amount clipped to tier limit
         """
         tier_limits = {
-            WalletTier.TIER_1: 70000.0,   # KES
-            WalletTier.TIER_2: 150000.0,  # KES
-            WalletTier.TIER_3: 250000.0,  # KES
+            WalletTier.TIER_1: 10_000.0,     # CBK Tier 1: max single tx KES 10,000
+            WalletTier.TIER_2: 50_000.0,     # CBK Tier 2: max single tx KES 50,000
+            WalletTier.TIER_3: 150_000.0,    # CBK Tier 3: max single tx KES 150,000
+            WalletTier.TIER_4: 500_000.0,    # CBK Tier 4 (EDD): max single tx KES 500,000
         }
-        
-        max_transaction = tier_limits[tier]
+
+        max_transaction = tier_limits.get(tier, 10_000.0)
         return min(amount, max_transaction)
     
     def _get_velocity_features(
@@ -1192,30 +1199,71 @@ class AMLGenerator:
         
         return amount
     
+    # 168-hour weekly intensity vector indexed by (dow * 24 + hour)
+    # Matches temporal_model.py WEEKLY_INTENSITY — kept locally for self-containment.
+    _WEEKLY_INTENSITY: list[float] = [
+        0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.40, 0.40, 0.40, 0.85, 0.85, 0.85,
+        0.85, 0.75, 0.75, 0.75, 1.00, 1.00, 1.00, 1.00, 0.50, 0.50, 0.50, 0.50,
+        0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.35, 0.35, 0.35, 0.80, 0.80, 0.80,
+        0.80, 0.70, 0.70, 0.70, 0.95, 0.95, 0.95, 0.95, 0.45, 0.45, 0.45, 0.45,
+        0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.35, 0.35, 0.35, 0.80, 0.80, 0.80,
+        0.80, 0.70, 0.70, 0.70, 0.95, 0.95, 0.95, 0.95, 0.45, 0.45, 0.45, 0.45,
+        0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.35, 0.35, 0.35, 0.80, 0.80, 0.80,
+        0.80, 0.70, 0.70, 0.70, 0.95, 0.95, 0.95, 0.95, 0.50, 0.50, 0.50, 0.50,
+        0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.35, 0.35, 0.35, 0.75, 0.75, 0.75,
+        0.75, 0.65, 0.65, 0.65, 0.90, 0.90, 0.90, 0.90, 0.60, 0.60, 0.60, 0.60,
+        0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.15, 0.15, 0.15, 0.50, 0.50, 0.50,
+        0.50, 0.55, 0.55, 0.55, 0.50, 0.50, 0.50, 0.50, 0.35, 0.35, 0.35, 0.35,
+        0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.05, 0.05, 0.05, 0.30, 0.30, 0.30,
+        0.30, 0.35, 0.35, 0.35, 0.30, 0.30, 0.30, 0.30, 0.15, 0.15, 0.15, 0.15,
+    ]
+
+    @staticmethod
+    def _week_intensity(ts: datetime) -> float:
+        """Return [0, 1] intensity for the hour-of-week at *ts*."""
+        idx = ts.weekday() * 24 + ts.hour
+        return AMLGenerator._WEEKLY_INTENSITY[idx]
+
     def _generate_transaction_time(
-        self, 
-        customer_id: str, 
-        last_time: datetime
+        self,
+        customer_id: str,
+        last_time: datetime,
     ) -> datetime:
         """
-        Generate next transaction time based on customer frequency.
-        
-        Args:
-            customer_id: Customer identifier
-            last_time: Last transaction time
-            
-        Returns:
-            Next transaction timestamp
+        Generate next transaction time using **thinning** of a homogeneous
+        Poisson process with the temporal_model WEEKLY_INTENSITY vector.
+
+        The base rate λ_base = *transaction_frequency* / 24  (events / hour).
+        The max rate λ_max = λ_base × 1.0 (peak weekday intensity).
+        Candidate times are drawn from Exp(λ_max) and accepted with
+        probability intensity(t) / 1.0.
+
+        This naturally produces:
+        - Peak-hour clustering (morning 6-9, evening 17-20)
+        - Off-peak lulls (late night intensity ~0.02 → ~98 % rejection)
+        - Weekday/weekend variation
         """
         profile = self.customers[customer_id]
-        
-        # Inter-arrival time based on transaction frequency (exponential)
-        mean_inter_arrival = 24.0 / profile.transaction_frequency  # hours
-        inter_arrival_hours = self._rng.exponential(mean_inter_arrival)
-        
-        next_time = last_time + timedelta(hours=inter_arrival_hours)
-        
-        return next_time
+        # Base hourly rate from daily frequency
+        lambda_base = profile.transaction_frequency / 24.0  # events / hour
+        lambda_max = lambda_base * 1.0  # peak intensity = 1.0
+
+        # Thinning loop
+        while True:
+            # Draw candidate inter-arrival from homogeneous Exp(λ_max)
+            dt_hours = self._rng.exponential(1.0 / lambda_max)
+            candidate = last_time + timedelta(hours=dt_hours)
+
+            # Accept / reject based on intensity at candidate time
+            intensity = self._week_intensity(candidate)
+            if intensity <= 0.0:
+                # Off-peak floor — always advance at least a little
+                continue
+            if self._rng.random() < intensity:
+                return candidate
+
+            # Rejected: advance last_time to candidate and retry from there
+            last_time = candidate
     
     def _select_counterparty(self, customer_id: str, exclude: set = None) -> str:
         """
@@ -1270,129 +1318,184 @@ class AMLGenerator:
         self.customers[receiver_id].counterparties.add(sender_id)
     
     def _simulate_day(
-        self, 
-        day: int, 
+        self,
+        day: int,
         start_date: datetime,
         max_transactions: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Simulate transactions for a single day.
-        
+        Simulate transactions using a continuous-time Monte Carlo ledger.
+
+        Instead of batching per-customer-per-day with random hours, this uses
+        non-homogeneous Poisson inter-arrival times across all customers via a
+        global event queue. Each customer has an independent exponential clock
+        whose rate depends on their transaction frequency. Transaction amounts
+        are conditioned on current balance, and outflows are capped so balance
+        never goes below zero. Tier balance caps are enforced post-update.
+
         Args:
             day: Day number in simulation
             start_date: Simulation start date
             max_transactions: Optional cap on transactions generated this day
-            
+
         Returns:
             List of transaction records with AML features
         """
-        current_date = start_date + timedelta(days=day)
+        day_start = start_date + timedelta(days=day)
+        day_end = day_start + timedelta(days=1)
         daily_transactions = []
-        
-        # Simulate transactions for each customer
+
+        # --- 1. Build per-customer event queue for this day ---
+        # Each customer gets their next tx time sampled from their exponential clock.
+        # We interleave all customers globally so transactions are temporally mixed.
+        if not hasattr(self, "_next_tx_time"):
+            self._next_tx_time = {}
+
+        event_queue: list[tuple[datetime, str]] = []  # (tx_time, customer_id)
+
         for customer_id, profile in self.customers.items():
+            # Determine first tx of the day from the inter-arrival clock
+            if customer_id in self._next_tx_time:
+                last_tx = self._next_tx_time[customer_id]
+            else:
+                last_tx = day_start
+
+            # Generate tx times throughout the day via renewal process
+            t = last_tx
+            while True:
+                t = self._generate_transaction_time(customer_id, t)
+                if t >= day_end:
+                    break
+                if t >= day_start or last_tx < day_start:
+                    event_queue.append((t, customer_id))
+            # Save the residual clock for the next day
+            self._next_tx_time[customer_id] = t
+
+        # Sort globally — this is the key step that creates temporal mixing
+        event_queue.sort(key=lambda x: x[0])
+
+        # --- 2. Process events in global temporal order ---
+        for tx_time, customer_id in event_queue:
             if max_transactions is not None and len(daily_transactions) >= max_transactions:
                 break
-            # Determine number of transactions for this customer today
-            expected_tx = profile.transaction_frequency
-            num_tx = self._rng.poisson(expected_tx)
-            
-            for tx_num in range(num_tx):
-                if max_transactions is not None and len(daily_transactions) >= max_transactions:
-                    break
-                # Generate transaction time
-                hour = self._rng.integers(6, 22)  # Business hours mostly
-                minute = self._rng.integers(0, 60)
-                second = self._rng.integers(0, 60)
-                tx_time = current_date.replace(hour=hour, minute=minute, second=second)
-                
-                # Determine transaction type
-                tx_type = self._rng.choice(['deposit', 'withdrawal', 'transfer'], p=[0.3, 0.3, 0.4])
-                
-                # Generate amount
-                amount = self._generate_transaction_amount(customer_id)
-                
-                # Balance constraint check
-                if tx_type in ['withdrawal', 'transfer']:
-                    if profile.current_balance < amount:
-                        # Skip transaction if insufficient funds
-                        continue
-                
-                # Select counterparty for transfers
-                counterparty = None
-                if tx_type == 'transfer':
-                    counterparty = self._select_counterparty(customer_id)
-                
-                # Update balance
-                if tx_type == 'deposit':
-                    profile.current_balance += amount
-                elif tx_type in ['withdrawal', 'transfer']:
-                    profile.current_balance -= amount
-                
-                # Update transaction graph for transfers
-                if tx_type == 'transfer' and counterparty:
-                    self._update_transaction_graph(customer_id, counterparty, amount)
-                    # Update receiver balance
-                    self.customers[counterparty].current_balance += amount
-                
-                # Update device/location state
-                if self._rng.random() < 0.05:  # 5% chance of device change
-                    profile.device_id = f"DEV_{self._rng.integers(100000, 999999)}"
-                profile.device_history.append(profile.device_id)
-                
-                if self._rng.random() < 0.1:  # 10% chance of location change
-                    locations = ["Nairobi", "Mombasa", "Kisumu", "Nakuru", "Eldoret", "Kiambu"]
-                    profile.primary_location = self._rng.choice(locations)
-                profile.location_history.append(profile.primary_location)
-                
-                # Store transaction in profile state
-                tx_record = {
-                    'timestamp': tx_time,
-                    'type': tx_type,
-                    'amount': amount,
-                    'counterparty': counterparty
-                }
-                profile.recent_transactions.append(tx_record)
-                
-                # Compute all AML features
-                features = self._compute_all_features(customer_id, amount, tx_time, tx_type)
-                
-                # Create complete transaction record
-                transaction_record = {
-                    'transaction_id': f"TXN_{self._transaction_counter:010d}",
-                    'customer_id': customer_id,
-                    'counterparty_id': counterparty or '',
-                    'timestamp': tx_time,
-                    'transaction_type': tx_type,
-                    'amount': amount,
-                    'post_tx_balance': profile.current_balance,
-                    # Customer identity fields
-                    'customer_name': profile.customer_name,
-                    'email': profile.email,
-                    'tax_id': profile.tax_id,
-                    # Device and wallet fields for Silver/Gold schemas
-                    'device_age_days': profile.device_age_days,
-                    'sim_match_status': profile.sim_match_status,
-                    'wallet_tier_encoded': profile.wallet_tier_encoded,
-                    'kyc_level_encoded': profile.kyc_level,
-                    'prev_fraud_flag_count_90d': profile.prev_fraud_flag_count_90d,
-                    # Location fields
-                    'receiver_id': counterparty or '',
-                    'sender_county': profile.primary_location,
-                    'receiver_county': self.customers[counterparty].primary_location if counterparty else '',
-                    # Anomaly fields (default to False/None for clean data)
-                    'anomaly_flag': False,
-                    'anomaly_type': None,
-                    **features
-                }
-                
-                daily_transactions.append(transaction_record)
-                self._transaction_counter += 1
-        
+
+            profile = self.customers[customer_id]
+
+            # Determine transaction type with balance-dependent directionality
+            balance_ratio = profile.current_balance / max(profile.avg_transaction_amount, 1.0)
+            # Low balance → higher inflow probability; high balance → higher outflow probability
+            if balance_ratio < 2.0:
+                tx_type = self._rng.choice(
+                    ['deposit', 'withdrawal', 'transfer'],
+                    p=[0.55, 0.15, 0.30]
+                )
+            elif balance_ratio > 10.0:
+                tx_type = self._rng.choice(
+                    ['deposit', 'withdrawal', 'transfer'],
+                    p=[0.15, 0.35, 0.50]
+                )
+            else:
+                tx_type = self._rng.choice(
+                    ['deposit', 'withdrawal', 'transfer'],
+                    p=[0.30, 0.25, 0.45]
+                )
+
+            # Generate amount — capped by tier and constrained by balance for outflows
+            amount = self._generate_transaction_amount(customer_id)
+
+            # Enforce regulatory per-transaction cap
+            amount = self._enforce_transaction_cap(amount, profile.wallet_tier)
+
+            # Balance constraint: outflows cannot exceed current balance
+            if tx_type in ('withdrawal', 'transfer'):
+                if amount > profile.current_balance:
+                    amount = profile.current_balance * self._rng.uniform(0.3, 0.9)
+                    if amount < 10.0:
+                        continue  # skip micro outflows that would be noise
+
+            # Select counterparty for transfers
+            counterparty = None
+            if tx_type == 'transfer':
+                counterparty = self._select_counterparty(customer_id)
+
+            # Update balance
+            pre_balance = profile.current_balance
+            if tx_type == 'deposit':
+                profile.current_balance += amount
+            elif tx_type in ('withdrawal', 'transfer'):
+                profile.current_balance -= amount
+
+            # Enforce tier balance cap
+            profile.current_balance = self._enforce_balance_cap(
+                profile.current_balance, profile.wallet_tier
+            )
+
+            # Update transaction graph for transfers
+            if tx_type == 'transfer' and counterparty:
+                self._update_transaction_graph(customer_id, counterparty, amount)
+                counterparty_profile = self.customers.get(counterparty)
+                if counterparty_profile:
+                    counterparty_profile.current_balance += amount
+                    counterparty_profile.current_balance = self._enforce_balance_cap(
+                        counterparty_profile.current_balance, counterparty_profile.wallet_tier
+                    )
+
+            # Update device/location state
+            if self._rng.random() < 0.05:
+                profile.device_id = f"DEV_{self._rng.integers(100000, 999999)}"
+            profile.device_history.append(profile.device_id)
+
+            if self._rng.random() < 0.1:
+                locations = ["Nairobi", "Mombasa", "Kisumu", "Nakuru", "Eldoret", "Kiambu"]
+                profile.primary_location = self._rng.choice(locations)
+            profile.location_history.append(profile.primary_location)
+
+            # Store transaction in profile state
+            tx_record = {
+                'timestamp': tx_time,
+                'type': tx_type,
+                'amount': amount,
+                'counterparty': counterparty,
+            }
+            profile.recent_transactions.append(tx_record)
+
+            # Compute all AML features
+            features = self._compute_all_features(customer_id, amount, tx_time, tx_type)
+
+            # Create complete transaction record
+            transaction_record = {
+                'transaction_id': f"TXN_{self._transaction_counter:010d}",
+                'customer_id': customer_id,
+                'counterparty_id': counterparty or '',
+                'timestamp': tx_time,
+                'transaction_type': tx_type,
+                'amount': amount,
+                'post_tx_balance': profile.current_balance,
+                'customer_name': profile.customer_name,
+                'email': profile.email,
+                'tax_id': profile.tax_id,
+                'device_age_days': profile.device_age_days,
+                'sim_match_status': profile.sim_match_status,
+                'wallet_tier_encoded': profile.wallet_tier_encoded,
+                'kyc_level_encoded': profile.kyc_level,
+                'prev_fraud_flag_count_90d': profile.prev_fraud_flag_count_90d,
+                'receiver_id': counterparty or '',
+                'sender_county': profile.primary_location,
+                'receiver_county': self.customers[counterparty].primary_location
+                if counterparty and counterparty in self.customers
+                else '',
+                'anomaly_flag': False,
+                'anomaly_type': None,
+                **features,
+            }
+
+            daily_transactions.append(transaction_record)
+            self._transaction_counter += 1
+
         # Update daily balances for all customers
         for customer_id, profile in self.customers.items():
             profile.daily_balances.append(profile.current_balance)
-        
+
         return daily_transactions
     
     def _compute_all_features(

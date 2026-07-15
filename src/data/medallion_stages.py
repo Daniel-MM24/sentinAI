@@ -66,7 +66,7 @@ def resolve_runtime_settings(
         "clean_data_directories": force_refresh or not fast_mode,
         "fast_mode": fast_mode,
         "bronze": {
-            "num_customers": 200 if fast_mode else 10_000,
+            "num_customers": 75 if fast_mode else 10_000,
             "num_days": 3 if fast_mode else 365,
             "target_transactions": 5_000 if fast_mode else 1_000_000,
             "seed": 42,
@@ -87,11 +87,7 @@ def clean_data_directories(data_dir: Path | None = None) -> None:
     """Remove and recreate bronze, silver, and gold data directories."""
     root = data_dir or (PROJECT_ROOT / "data")
     for layer in ("bronze", "silver", "gold"):
-        layer_dir = root / layer
-        if layer_dir.exists():
-            logger.info("Cleaning %s directory: %s", layer, layer_dir)
-            shutil.rmtree(layer_dir)
-        layer_dir.mkdir(parents=True, exist_ok=True)
+        _clean_layer(root, layer)
 
     synthetic_db = root / "synthetic.duckdb"
     if synthetic_db.exists():
@@ -99,63 +95,15 @@ def clean_data_directories(data_dir: Path | None = None) -> None:
         synthetic_db.unlink()
 
 
-def _prepare_for_anomaly_injection(df: pl.DataFrame) -> pl.DataFrame:
-    """Normalize AML generator columns for FinancialAnomalyInjector."""
-    prepared = df.clone()
-
-    if "transaction_amount" not in prepared.columns and "amount" in prepared.columns:
-        prepared = prepared.with_columns(pl.col("amount").alias("transaction_amount"))
-
-    if "account_balance" not in prepared.columns:
-        if "post_tx_balance" in prepared.columns:
-            prepared = prepared.with_columns(pl.col("post_tx_balance").alias("account_balance"))
-        else:
-            prepared = prepared.with_columns(pl.lit(5_000.0).alias("account_balance"))
-
-    defaults: dict[str, pl.Expr] = {
-        "transaction_count": pl.lit(5),
-        "price_impact": pl.lit(0.01),
-        "liquidity_score": pl.lit(0.5),
-        "bid_ask_spread": pl.lit(0.001),
-        "counterparty_risk_tier": pl.lit("LOW"),
-    }
-    for column, expr in defaults.items():
-        if column not in prepared.columns:
-            prepared = prepared.with_columns(expr.alias(column))
-
-    return prepared
+def _clean_layer(root: Path, layer: str) -> None:
+    """Remove and recreate a single medallion layer directory."""
+    layer_dir = root / layer
+    if layer_dir.exists():
+        logger.info("Cleaning %s directory: %s", layer, layer_dir)
+        shutil.rmtree(layer_dir)
+    layer_dir.mkdir(parents=True, exist_ok=True)
 
 
-def _normalize_injected_anomaly_types(df: pl.DataFrame) -> pl.DataFrame:
-    """Map injector anomaly labels to regulatory enum values."""
-    if "anomaly_type" not in df.columns:
-        return df
-
-    mapping = {
-        "amount_spike": "AMOUNT_SPIKE",
-        "velocity_surge": "VELOCITY_SURGE",
-        "balance_depletion": "REGULATORY_CEILING_VIOLATION",
-        "price_manipulation": "AMOUNT_SPIKE",
-        "liquidity_anomaly": "SMURFING",
-        "spread_abnormality": "ROUND_NUMBER_CHURN",
-        "counterparty_risk": "REGULATORY_CEILING_VIOLATION",
-        "temporal_pattern": "VELOCITY_SURGE",
-    }
-    return df.with_columns(
-        pl.col("anomaly_type")
-        .replace(mapping, default=None)
-        .alias("anomaly_type")
-    )
-
-
-def _restore_bronze_columns(df: pl.DataFrame, original: pl.DataFrame) -> pl.DataFrame:
-    """Map injector column names back to AML bronze schema."""
-    restored = df.clone()
-    if "amount" in original.columns and "transaction_amount" in restored.columns:
-        restored = restored.with_columns(pl.col("transaction_amount").alias("amount"))
-    if "post_tx_balance" in original.columns and "account_balance" in restored.columns:
-        restored = restored.with_columns(pl.col("account_balance").alias("post_tx_balance"))
-    return restored
 
 
 @lineage_trace(
@@ -229,10 +177,7 @@ def run_bronze_stage(
     injector = FinancialAnomalyInjector(
         InjectorConfig(anomaly_ratio=anomaly_ratio, seed=seed)
     )
-    prepared = _prepare_for_anomaly_injection(synthetic_data)
-    anomalous_data = injector.inject(prepared)
-    anomalous_data = _restore_bronze_columns(anomalous_data, synthetic_data)
-    anomalous_data = _normalize_injected_anomaly_types(anomalous_data)
+    anomalous_data = injector.inject(synthetic_data)
 
     if anomalous_data.height > 0 and "anomaly_flag" in anomalous_data.columns:
         anomaly_ratio_actual = float(

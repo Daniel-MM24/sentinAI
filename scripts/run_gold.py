@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.data.medallion_stages import run_gold_stage
+from src.data.medallion_stages import _clean_layer, run_gold_stage
 
 logging.basicConfig(
     level=logging.INFO,
@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 
 
 def main() -> None:
+    # Clean Gold layer before writing fresh data
+    data_dir = Path(__file__).parent.parent / "data"
+    _clean_layer(data_dir, "gold")
+
     try:
         result = run_gold_stage()
     except Exception:

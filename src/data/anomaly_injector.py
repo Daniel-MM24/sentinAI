@@ -1,18 +1,16 @@
 """
-Financial Anomaly Injector for Synthetic Data.
+AML Anomaly Injector for Synthetic M-PESA Data.
 
-This module injects structural anomalies into clean financial data at a controlled
-ratio (0.015 = 1.5% of total dataset). It accepts pristine data and embeds
-realistic anomaly patterns, then appends tracking columns for ground-truth labels.
+Injects structural anomalies into clean AMLGenerator output at a controlled
+ratio (0.015 = 1.5% of total dataset). Operates directly on AMLGenerator-native
+columns — no schema bridging needed.
 
 CRITICAL: This module ONLY adds anomaly_flag and anomaly_type columns AFTER
 injecting anomalies. The injector is responsible for:
-1. Accepting clean data (no anomaly flags)
+1. Accepting clean data (anomaly_flag=False, anomaly_type=null)
 2. Injecting anomalies at strict 0.015 ratio
-3. Appending anomaly_flag (1 for anomalous, 0 for clean)
-4. Appending anomaly_type (categorical string describing anomaly type)
-
-The injector creates the ground-truth targets for downstream ML verification.
+3. Overwriting anomaly_flag (True for anomalous, False for clean)
+4. Setting anomaly_type (POCAMLA-compatible categorical string)
 """
 
 import logging
@@ -26,547 +24,497 @@ logger = logging.getLogger(__name__)
 
 
 class AnomalyType(Enum):
-    """Enumeration of financial anomaly types."""
-    AMOUNT_SPIKE = "amount_spike"
-    VELOCITY_SURGE = "velocity_surge"
-    BALANCE_DEPLETION = "balance_depletion"
-    PRICE_MANIPULATION = "price_manipulation"
-    LIQUIDITY_ANOMALY = "liquidity_anomaly"
-    SPREAD_ABNORMALITY = "spread_abnormality"
-    COUNTERPARTY_RISK = "counterparty_risk"
-    TEMPORAL_PATTERN = "temporal_pattern"
+    """POCAMLA-compatible anomaly types targeting AMLGenerator-native features."""
+    AMOUNT_ANOMALY = "amount_anomaly"                    # Structuring / smurfing
+    VELOCITY_FUNNEL = "velocity_funnel"                  # Funnel account velocity
+    MULE_ACTIVITY = "mule_activity"                      # Pass-through mule
+    LAYERING = "layering"                                # Network layering hops
+    CEILING_VIOLATION = "ceiling_violation"              # CBK regulatory tier breach
+    HIGH_RISK_COUNTRY = "high_risk_country"              # Cross-border to risky jurisdiction
+    CIRCULAR_TRADING = "circular_trading"                # Same-community circular flow
+    TEMPORAL_ANOMALY = "temporal_anomaly"                # Off-hours / device churn
 
 
 @dataclass
 class InjectorConfig:
-    """Configuration for the FinancialAnomalyInjector."""
-    anomaly_ratio: float = 0.015  # 1.5% of records should be anomalous
+    """Configuration for AML-native anomaly injection.
+
+    Each parameter controls how the injector modifies AMLGenerator columns
+    during anomaly injection. Tuned for realistic M-PESA anomaly patterns.
+    """
+    anomaly_ratio: float = 0.015
     seed: int = 42
-    # Equal 12.5% share per anomaly type (8 types × 0.125 = 1.0)
+
+    # Structuring / amount anomalies
+    structuring_amount_target: float = 95_000.0       # KES — just below CTR threshold
+    structuring_amount_sigma: float = 5_000.0         # KES — noise around target
+    structuring_roundness_threshold: float = 0.85     # High amount_roundness
+    structuring_entropy_threshold: float = 0.7        # High structuring_amount_entropy
+
+    # Velocity / funnel
+    funnel_tx_count_1h: int = 18                      # tx_count_1h target
+    funnel_tx_count_24h: int = 80                     # tx_count_24h target
+    funnel_burst_ratio: float = 4.0                   # burst_ratio target
+    funnel_score_target: float = 0.85                 # funnel_score target
+
+    # Mule / pass-through
+    mule_pass_through_ratio: float = 0.90             # pass_through_ratio
+    mule_zero_balance_freq: float = 0.60              # zero_balance_frequency
+    mule_retention_ratio: float = 0.10                # balance_retention_ratio (low)
+    mule_depletion_rate: float = 0.85                 # balance_depletion_rate
+
+    # Layering / network
+    layering_degree_centrality: float = 0.35          # degree_centrality
+    layering_reciprocity: float = 0.15                # reciprocity_ratio (low)
+    layering_new_relationships: int = 7               # new_relationships_7d
+    layering_behavioural_shift: float = 0.75          # behavioral_shift_score
+
+    # Regulatory ceiling violation
+    ceiling_violation_amount: float = 80_000.0        # KES — well above TIER_1 cap (10K)
+    ceiling_post_tx_balance: float = 90_000.0         # KES — above TIER_1 balance cap (50K)
+    ceiling_min_target_tier_encoded: int = 0          # 0 = TIER_1 (wallet_tier_encoded)
+
+    # High risk country
+    high_risk_amount: float = 150_000.0               # KES
+    high_risk_country_code: str = "IR"                # High-risk jurisdiction
+    counterparty_risk_flag_value: bool = True
+
+    # Circular trading
+    circular_amount_mean: float = 50_000.0            # KES
+    circular_amount_sigma: float = 15_000.0
+    circular_clustering: float = 0.80                 # clustering_coefficient target
+
+    # Temporal anomaly
+    temporal_anomalous_hour: int = 3                  # 3 AM — off-hours
+    temporal_device_changes: int = 4                  # device_changes_7d
+    temporal_location_entropy: float = 0.85           # location_entropy target
+
+    # Equal share per anomaly type (12.5% each for 8 types → do not sum to 1.0 for compatibility)
     anomaly_type_weights: Dict[str, float] = field(default_factory=lambda: {
-        AnomalyType.AMOUNT_SPIKE.value: 0.125,
-        AnomalyType.VELOCITY_SURGE.value: 0.125,
-        AnomalyType.BALANCE_DEPLETION.value: 0.125,
-        AnomalyType.PRICE_MANIPULATION.value: 0.125,
-        AnomalyType.LIQUIDITY_ANOMALY.value: 0.125,
-        AnomalyType.SPREAD_ABNORMALITY.value: 0.125,
-        AnomalyType.COUNTERPARTY_RISK.value: 0.125,
-        AnomalyType.TEMPORAL_PATTERN.value: 0.125,
+        "amount_anomaly": 0.20,
+        "velocity_funnel": 0.15,
+        "mule_activity": 0.15,
+        "layering": 0.10,
+        "ceiling_violation": 0.20,
+        "high_risk_country": 0.10,
+        "circular_trading": 0.05,
+        "temporal_anomaly": 0.05,
     })
-    amount_spike_multiplier: float = 10.0  # Multiplier for amount spikes
-    velocity_threshold: float = 5.0  # Std devs above mean for velocity
-    balance_depletion_threshold: float = 0.9  # 90% balance depletion
-    price_impact_threshold: float = 0.08  # 8% price impact
-    liquidity_threshold: float = 0.1  # Below 10% liquidity
-    spread_multiplier: float = 5.0  # Multiplier for spread anomalies
+
+
+# Columns the injector may modify (all exist in AMLGenerator output)
+INJECTABLE_FEATURES: List[str] = [
+    "amount",
+    "tx_count_1h",
+    "tx_count_24h",
+    "burst_ratio",
+    "funnel_score",
+    "pass_through_ratio",
+    "zero_balance_frequency",
+    "balance_retention_ratio",
+    "balance_depletion_rate",
+    "degree_centrality",
+    "reciprocity_ratio",
+    "new_relationships_7d",
+    "behavioral_shift_score",
+    "structuring_amount_entropy",
+    "amount_roundness",
+    "amount_vs_profile_avg",
+    "post_tx_balance",
+    "current_balance",
+    "hour_of_day",
+    "is_anomalous_hour",
+    "device_changes_7d",
+    "location_entropy",
+    "clustering_coefficient",
+    "community_id",
+    "wallet_tier_encoded",
+]
+
+# Mapping from AnomalyType enum value to POCAMLA label
+ANOMALY_TYPE_MAP: Dict[str, str] = {
+    "amount_anomaly": "structuring",
+    "velocity_funnel": "funnel_account",
+    "mule_activity": "mule_account",
+    "layering": "layering",
+    "ceiling_violation": "regulatory_breach",
+    "high_risk_country": "high_risk_jurisdiction",
+    "circular_trading": "circular_trading",
+    "temporal_anomaly": "temporal_anomaly",
+}
+
+ANOMALY_TYPE_DISTRIBUTION: Dict[AnomalyType, float] = {
+    AnomalyType.AMOUNT_ANOMALY: 0.20,
+    AnomalyType.VELOCITY_FUNNEL: 0.15,
+    AnomalyType.MULE_ACTIVITY: 0.15,
+    AnomalyType.LAYERING: 0.10,
+    AnomalyType.CEILING_VIOLATION: 0.20,
+    AnomalyType.HIGH_RISK_COUNTRY: 0.10,
+    AnomalyType.CIRCULAR_TRADING: 0.05,
+    AnomalyType.TEMPORAL_ANOMALY: 0.05,
+}
 
 
 class FinancialAnomalyInjector:
+    """Injects AML-native anomalies into synthetic M-PESA transaction data.
+
+    Operates directly on the AMLGenerator output schema. Accepts a clean
+    DataFrame (anomaly_flag=False, anomaly_type=null), injects anomalies,
+    and returns the same DataFrame with anomalies modified and labels set.
+
+    The injector is schema-agnostic beyond INJECTABLE_FEATURES — missing
+    columns are silently skipped (graceful degradation for subsets).
     """
-    Injects structural anomalies into clean financial data.
-    
-    This class accepts pristine financial data and embeds realistic anomaly
-    patterns at a strict ratio of 0.015 (1.5% of total dataset). After injection,
-    it appends tracking columns (anomaly_flag, anomaly_type) for ground-truth labels.
-    
-    The injector implements various anomaly types:
-    - Amount spikes: Transactions with abnormally high amounts
-    - Velocity surges: Unusual transaction frequency patterns
-    - Balance depletion: Rapid account balance depletion
-    - Price manipulation: Abnormal price impact patterns
-    - Liquidity anomalies: Unusual liquidity scores
-    - Spread abnormalities: Abnormal bid-ask spreads
-    - Counterparty risk: High-risk counterparty patterns
-    - Temporal patterns: Unusual timing patterns
-    
-    All operations use vectorized Polars expressions for performance.
-    """
-    
+
     def __init__(self, config: Optional[InjectorConfig] = None):
-        """
-        Initialize the FinancialAnomalyInjector.
-        
-        Args:
-            config: InjectorConfig instance with injection parameters.
-                   If None, uses default configuration.
-        """
         self.config = config or InjectorConfig()
         self._rng = np.random.default_rng(self.config.seed)
-        
+        self._validate_type_weights()
+
+    def _validate_type_weights(self) -> None:
+        """Warn if anomaly type weights do not sum to 1.0."""
+        total = sum(self.config.anomaly_type_weights.values())
+        if abs(total - 1.0) > 0.01:
+            logger.warning(
+                "Anomaly type weights sum to %.3f (expected ~1.0).",
+                total,
+            )
+
+    def inject(self, df: pl.DataFrame) -> pl.DataFrame:
+        """Inject anomalies into a clean DataFrame.
+
+        Args:
+            df: Clean transaction data from AMLGenerator (66+ columns).
+
+        Returns:
+            DataFrame with anomaly_flag (bool) and anomaly_type (str) set.
+        """
+        result = df.with_columns([
+            pl.lit(False).alias("anomaly_flag"),
+            pl.lit(None, dtype=pl.Utf8).alias("anomaly_type"),
+        ])
+
+        n_total = len(result)
+        n_anomalies = max(1, int(n_total * self.config.anomaly_ratio))
+
         logger.info(
-            f"Initialized FinancialAnomalyInjector with anomaly_ratio={self.config.anomaly_ratio}, "
-            f"seed={self.config.seed}"
+            "Injecting %d anomalies into %d records (ratio=%.4f)",
+            n_anomalies,
+            n_total,
+            self.config.anomaly_ratio,
         )
-    
-    def _inject_amount_spikes(
-        self, 
-        df: pl.DataFrame, 
-        anomaly_indices: np.ndarray
-    ) -> pl.DataFrame:
-        """
-        Inject amount spike anomalies.
-        
-        Args:
-            df: Input DataFrame
-            anomaly_indices: Indices where to inject anomalies
-            
-        Returns:
-            DataFrame with amount spike anomalies injected
-        """
-        n_anomalies = len(anomaly_indices)
-        
-        # Apply multiplier to transaction amounts
-        spike_amounts = df["transaction_amount"].to_numpy()[anomaly_indices]
-        spiked_amounts = spike_amounts * self.config.amount_spike_multiplier
-        
-        # Update the DataFrame using vectorized operations
-        df = df.with_columns([
-            pl.when(pl.col("transaction_amount").is_in(spike_amounts))
-            .then(pl.col("transaction_amount") * self.config.amount_spike_multiplier)
-            .otherwise(pl.col("transaction_amount"))
-            .alias("transaction_amount")
-        ])
-        
-        # More direct approach: create a mask and update
-        mask = np.zeros(len(df), dtype=bool)
-        mask[anomaly_indices] = True
-        
-        amounts = df["transaction_amount"].to_numpy().copy()
-        amounts[mask] = amounts[mask] * self.config.amount_spike_multiplier
-        
-        df = df.with_columns([
-            pl.Series("transaction_amount", amounts)
-        ])
-        
-        logger.info(f"Injected {n_anomalies} amount spike anomalies")
-        return df
-    
-    def _inject_velocity_surges(
-        self, 
-        df: pl.DataFrame, 
-        anomaly_indices: np.ndarray
-    ) -> pl.DataFrame:
-        """
-        Inject velocity surge anomalies.
-        
-        Args:
-            df: Input DataFrame
-            anomaly_indices: Indices where to inject anomalies
-            
-        Returns:
-            DataFrame with velocity surge anomalies injected
-        """
-        n_anomalies = len(anomaly_indices)
-        
-        # Calculate mean and std of transaction counts
-        mean_count = df["transaction_count"].mean()
-        std_count = df["transaction_count"].std()
-        
-        # Set transaction counts to extreme values
-        mask = np.zeros(len(df), dtype=bool)
-        mask[anomaly_indices] = True
-        
-        transaction_counts = df["transaction_count"].to_numpy().copy()
-        transaction_counts[mask] = mean_count + self.config.velocity_threshold * std_count
-        
-        df = df.with_columns([
-            pl.Series("transaction_count", transaction_counts.astype(int))
-        ])
-        
-        logger.info(f"Injected {n_anomalies} velocity surge anomalies")
-        return df
-    
-    def _inject_balance_depletion(
-        self, 
-        df: pl.DataFrame, 
-        anomaly_indices: np.ndarray
-    ) -> pl.DataFrame:
-        """
-        Inject balance depletion anomalies.
-        
-        Args:
-            df: Input DataFrame
-            anomaly_indices: Indices where to inject anomalies
-            
-        Returns:
-            DataFrame with balance depletion anomalies injected
-        """
-        n_anomalies = len(anomaly_indices)
-        
-        # Set balances to very low values (near depletion)
-        mask = np.zeros(len(df), dtype=bool)
-        mask[anomaly_indices] = True
-        
-        balances = df["account_balance"].to_numpy().copy()
-        balances[mask] = balances[mask] * (1 - self.config.balance_depletion_threshold)
-        
-        df = df.with_columns([
-            pl.Series("account_balance", balances)
-        ])
-        
-        logger.info(f"Injected {n_anomalies} balance depletion anomalies")
-        return df
-    
-    def _inject_price_manipulation(
-        self, 
-        df: pl.DataFrame, 
-        anomaly_indices: np.ndarray
-    ) -> pl.DataFrame:
-        """
-        Inject price manipulation anomalies.
-        
-        Args:
-            df: Input DataFrame
-            anomaly_indices: Indices where to inject anomalies
-            
-        Returns:
-            DataFrame with price manipulation anomalies injected
-        """
-        n_anomalies = len(anomaly_indices)
-        
-        # Set price impact to extreme values
-        mask = np.zeros(len(df), dtype=bool)
-        mask[anomaly_indices] = True
-        
-        price_impacts = df["price_impact"].to_numpy().copy()
-        # Alternate between positive and negative extreme impacts
-        signs = self._rng.choice([-1, 1], size=n_anomalies)
-        price_impacts[mask] = signs * self.config.price_impact_threshold
-        
-        df = df.with_columns([
-            pl.Series("price_impact", price_impacts)
-        ])
-        
-        logger.info(f"Injected {n_anomalies} price manipulation anomalies")
-        return df
-    
-    def _inject_liquidity_anomalies(
-        self, 
-        df: pl.DataFrame, 
-        anomaly_indices: np.ndarray
-    ) -> pl.DataFrame:
-        """
-        Inject liquidity anomalies.
-        
-        Args:
-            df: Input DataFrame
-            anomaly_indices: Indices where to inject anomalies
-            
-        Returns:
-            DataFrame with liquidity anomalies injected
-        """
-        n_anomalies = len(anomaly_indices)
-        
-        # Set liquidity scores to very low values
-        mask = np.zeros(len(df), dtype=bool)
-        mask[anomaly_indices] = True
-        
-        liquidity_scores = df["liquidity_score"].to_numpy().copy()
-        liquidity_scores[mask] = self._rng.uniform(
-            0.0, 
-            self.config.liquidity_threshold, 
-            size=n_anomalies
-        )
-        
-        df = df.with_columns([
-            pl.Series("liquidity_score", liquidity_scores)
-        ])
-        
-        logger.info(f"Injected {n_anomalies} liquidity anomalies")
-        return df
-    
-    def _inject_spread_abnormalities(
-        self, 
-        df: pl.DataFrame, 
-        anomaly_indices: np.ndarray
-    ) -> pl.DataFrame:
-        """
-        Inject spread abnormality anomalies.
-        
-        Args:
-            df: Input DataFrame
-            anomaly_indices: Indices where to inject anomalies
-            
-        Returns:
-            DataFrame with spread abnormality anomalies injected
-        """
-        n_anomalies = len(anomaly_indices)
-        
-        # Multiply spreads by extreme factor
-        mask = np.zeros(len(df), dtype=bool)
-        mask[anomaly_indices] = True
-        
-        spreads = df["bid_ask_spread"].to_numpy().copy()
-        spreads[mask] = spreads[mask] * self.config.spread_multiplier
-        
-        df = df.with_columns([
-            pl.Series("bid_ask_spread", spreads)
-        ])
-        
-        logger.info(f"Injected {n_anomalies} spread abnormality anomalies")
-        return df
-    
-    def _inject_counterparty_risk(
-        self, 
-        df: pl.DataFrame, 
-        anomaly_indices: np.ndarray
-    ) -> pl.DataFrame:
-        """
-        Inject counterparty risk anomalies.
-        
-        Args:
-            df: Input DataFrame
-            anomaly_indices: Indices where to inject anomalies
-            
-        Returns:
-            DataFrame with counterparty risk anomalies injected
-        """
-        n_anomalies = len(anomaly_indices)
-        
-        # Set counterparty risk tier to High
-        mask = np.zeros(len(df), dtype=bool)
-        mask[anomaly_indices] = True
-        
-        risk_tiers = df["counterparty_risk_tier"].to_numpy().copy()
-        risk_tiers[mask] = "High"
-        
-        df = df.with_columns([
-            pl.Series("counterparty_risk_tier", risk_tiers)
-        ])
-        
-        logger.info(f"Injected {n_anomalies} counterparty risk anomalies")
-        return df
-    
-    def _inject_temporal_patterns(
-        self, 
-        df: pl.DataFrame, 
-        anomaly_indices: np.ndarray
-    ) -> pl.DataFrame:
-        """
-        Inject temporal pattern anomalies (unusual timing).
-        
-        Args:
-            df: Input DataFrame
-            anomaly_indices: Indices where to inject anomalies
-            
-        Returns:
-            DataFrame with temporal pattern anomalies injected
-        """
-        n_anomalies = len(anomaly_indices)
-        
-        # Shift timestamps to unusual hours (e.g., 2 AM - 4 AM)
-        mask = np.zeros(len(df), dtype=bool)
-        mask[anomaly_indices] = True
-        
-        timestamps = df["timestamp"].to_numpy().copy()
-        # Shift by 6-8 hours to unusual times
-        shift_hours = self._rng.integers(6, 9, size=n_anomalies)
-        
-        for i, idx in enumerate(anomaly_indices):
-            timestamps[idx] = timestamps[idx] + np.timedelta64(shift_hours[i], 'h')
-        
-        df = df.with_columns([
-            pl.Series("timestamp", timestamps)
-        ])
-        
-        logger.info(f"Injected {n_anomalies} temporal pattern anomalies")
-        return df
-    
-    def inject(self, clean_df: pl.DataFrame) -> pl.DataFrame:
-        """
-        Inject anomalies into clean financial data.
-        
-        This method:
-        1. Calculates the number of anomalies to inject based on ratio
-        2. Randomly selects indices for anomaly injection
-        3. Applies various anomaly types to selected records
-        4. Appends anomaly_flag and anomaly_type columns
-        
-        Args:
-            clean_df: Polars DataFrame with clean financial data (no anomaly flags)
-            
-        Returns:
-            Polars DataFrame with anomalies injected and tracking columns added:
-            - All original columns (modified where anomalies were injected)
-            - anomaly_flag: 1 for anomalous, 0 for clean (int32)
-            - anomaly_type: Categorical string describing anomaly type
-            
-        Raises:
-            ValueError: If input DataFrame is empty or ratio is invalid
-        """
-        logger.info("Starting anomaly injection process")
-        
-        # Validate input
-        if len(clean_df) == 0:
-            raise ValueError("Input DataFrame cannot be empty")
-        
-        if not (0 < self.config.anomaly_ratio <= 1):
-            raise ValueError("anomaly_ratio must be between 0 and 1")
-        
-        # Calculate number of anomalies to inject
-        n_total = len(clean_df)
-        n_anomalies = int(n_total * self.config.anomaly_ratio)
-        
-        if n_anomalies == 0:
-            logger.warning("Anomaly ratio too small for dataset size, no anomalies injected")
-            # Still add tracking columns (all clean)
-            df = clean_df.clone()
-            df = df.with_columns([
-                pl.lit(0, dtype=pl.Int32).alias("anomaly_flag"),
-                pl.lit(None, dtype=pl.String).alias("anomaly_type")
-            ])
-            return df
-        
-        logger.info(f"Injecting {n_anomalies} anomalies ({n_anomalies/n_total:.2%} of dataset)")
-        
-        # Randomly select indices for anomaly injection
+
+        # Stratified anomaly assignment
         anomaly_indices = self._rng.choice(
-            n_total, 
-            size=n_anomalies, 
-            replace=False
+            n_total, size=n_anomalies, replace=False
         )
-        anomaly_indices = np.sort(anomaly_indices)
-        
-        # Clone the DataFrame to avoid modifying the original
-        df = clean_df.clone()
-        
-        # Distribute anomalies across different types using configured weights
-        anomaly_types = list(AnomalyType)
-        type_values = [t.value for t in anomaly_types]
-        weights = [
-            self.config.anomaly_type_weights.get(tv, 0.0) for tv in type_values
-        ]
-        weight_sum = sum(weights)
-        if weight_sum <= 0:
-            probabilities = [1.0 / len(anomaly_types)] * len(anomaly_types)
-        else:
-            probabilities = [w / weight_sum for w in weights]
+        anomaly_types = self._assign_anomaly_types(n_anomalies)
 
-        # Assign anomaly types to indices
-        assigned_types = self._rng.choice(
-            anomaly_types, size=n_anomalies, p=probabilities
-        )
-        
-        # Create arrays to track which records get which anomaly type
-        anomaly_type_array = np.array([None] * n_total, dtype=object)
-        
-        # Inject anomalies by type
-        for anomaly_type in anomaly_types:
-            type_mask = assigned_types == anomaly_type
-            type_indices = anomaly_indices[type_mask]
-            
-            if len(type_indices) == 0:
+        # Group by anomaly type and inject
+        type_to_indices: Dict[str, List[int]] = {}
+        for idx, at in zip(anomaly_indices, anomaly_types):
+            type_to_indices.setdefault(at, []).append(int(idx))
+
+        for at_name, indices in type_to_indices.items():
+            type_enum = AnomalyType(at_name)
+            method = getattr(self, f"_inject_{at_name}", None)
+            if method is None:
+                logger.warning("No injection method for '%s', skipping.", at_name)
                 continue
-            
-            # Mark the anomaly type
-            for idx in type_indices:
-                anomaly_type_array[idx] = anomaly_type.value
-            
-            # Inject the specific anomaly
-            if anomaly_type == AnomalyType.AMOUNT_SPIKE:
-                df = self._inject_amount_spikes(df, type_indices)
-            elif anomaly_type == AnomalyType.VELOCITY_SURGE:
-                df = self._inject_velocity_surges(df, type_indices)
-            elif anomaly_type == AnomalyType.BALANCE_DEPLETION:
-                df = self._inject_balance_depletion(df, type_indices)
-            elif anomaly_type == AnomalyType.PRICE_MANIPULATION:
-                df = self._inject_price_manipulation(df, type_indices)
-            elif anomaly_type == AnomalyType.LIQUIDITY_ANOMALY:
-                df = self._inject_liquidity_anomalies(df, type_indices)
-            elif anomaly_type == AnomalyType.SPREAD_ABNORMALITY:
-                df = self._inject_spread_abnormalities(df, type_indices)
-            elif anomaly_type == AnomalyType.COUNTERPARTY_RISK:
-                df = self._inject_counterparty_risk(df, type_indices)
-            elif anomaly_type == AnomalyType.TEMPORAL_PATTERN:
-                df = self._inject_temporal_patterns(df, type_indices)
-        
-        # Create anomaly_flag array
-        anomaly_flags = np.zeros(n_total, dtype=np.int32)
-        anomaly_flags[anomaly_indices] = 1
-        
-        # Convert anomaly_type_array to proper string type with null handling
-        anomaly_type_list = [str(x) if x is not None else None for x in anomaly_type_array]
-        
-        # Append tracking columns
-        df = df.with_columns([
-            pl.Series("anomaly_flag", anomaly_flags, dtype=pl.Int32),
-            pl.Series("anomaly_type", anomaly_type_list, dtype=pl.String)
-        ])
-        
+
+            pocamla_label = ANOMALY_TYPE_MAP.get(at_name, at_name)
+            row_mask = pl.Series("__mask", [False] * n_total)
+            for i in indices:
+                row_mask[i] = True
+
+            try:
+                result = method(result, row_mask)
+            except Exception:
+                logger.exception("Injection failed for '%s', skipping.", at_name)
+                continue
+
+            # Set labels on injected rows (scoped to current type group only)
+            result = result.with_columns([
+                pl.when(row_mask)
+                .then(pl.lit(pocamla_label))
+                .otherwise(pl.col("anomaly_type"))
+                .alias("anomaly_type"),
+            ])
+
         logger.info(
-            f"Successfully injected {n_anomalies} anomalies. "
-            f"Anomaly distribution: {dict(zip(*np.unique(anomaly_type_array[anomaly_indices], return_counts=True)))}"
+            "Injected %d anomalies (%d types).",
+            n_anomalies,
+            len(type_to_indices),
         )
-        
-        return df
-    
-    def get_anomaly_summary(self, df: pl.DataFrame) -> Dict[str, Any]:
-        """
-        Generate summary statistics for the injected anomalies.
-        
-        Args:
-            df: Polars DataFrame with anomalies injected
-            
-        Returns:
-            Dictionary containing anomaly summary statistics
-        """
-        n_total = len(df)
-        n_anomalies = df.filter(pl.col("anomaly_flag") == 1).shape[0]
-        
-        anomaly_types_dist = (
-            df.filter(pl.col("anomaly_flag") == 1)
-            .group_by("anomaly_type")
-            .agg(pl.len().alias("count"))
-            .sort("count", descending=True)
-        )
-        
-        summary = {
-            "total_records": n_total,
-            "total_anomalies": n_anomalies,
-            "anomaly_ratio": n_anomalies / n_total if n_total > 0 else 0,
-            "anomaly_type_distribution": anomaly_types_dist.to_dict(as_series=False)
-        }
-        
-        return summary
+        return result
 
+    def _assign_anomaly_types(self, n: int) -> List[str]:
+        """Assign anomaly types to n indices using the weighted distribution."""
+        types = list(self.config.anomaly_type_weights.keys())
+        weights = list(self.config.anomaly_type_weights.values())
+        weights = np.array(weights) / sum(weights)
+        return list(self._rng.choice(types, size=n, p=weights))
 
-def main():
-    """Example usage of the FinancialAnomalyInjector."""
-    logging.basicConfig(level=logging.INFO)
-    
-    # Import the clean data generator
-    from src.data.synthetic_generator import CleanDataGenerator, GeneratorConfig
-    
-    # Generate clean data
-    config = GeneratorConfig(num_records=10000, num_entities=500, seed=42)
-    generator = CleanDataGenerator(config)
-    clean_df = generator.generate()
-    
-    print("\n=== Clean Data ===")
-    print(f"Shape: {clean_df.shape}")
-    print(f"Columns: {clean_df.columns}")
-    
-    # Inject anomalies
-    injector_config = InjectorConfig(anomaly_ratio=0.015, seed=42)
-    injector = FinancialAnomalyInjector(injector_config)
-    anomalous_df = injector.inject(clean_df)
-    
-    print("\n=== Anomalous Data ===")
-    print(f"Shape: {anomalous_df.shape}")
-    print(f"Columns: {anomalous_df.columns}")
-    
-    # Display anomaly summary
-    summary = injector.get_anomaly_summary(anomalous_df)
-    print(f"\n=== Anomaly Summary ===")
-    print(f"Total Records: {summary['total_records']}")
-    print(f"Total Anomalies: {summary['total_anomalies']}")
-    print(f"Anomaly Ratio: {summary['anomaly_ratio']:.2%}")
-    print(f"Anomaly Type Distribution: {summary['anomaly_type_distribution']}")
-    
-    # Display sample of anomalous records
-    print(f"\n=== Sample Anomalous Records ===")
-    print(anomalous_df.filter(pl.col("anomaly_flag") == 1).head())
+    # ------------------------------------------------------------------
+    # Injection methods — each targets AMLGenerator-native columns
+    # ------------------------------------------------------------------
 
+    def _inject_amount_anomaly(
+        self, df: pl.DataFrame, mask: pl.Series
+    ) -> pl.DataFrame:
+        """Structuring: amounts just below CTR threshold with high roundness."""
+        n = mask.sum()
+        struct_amounts = self._rng.normal(
+            self.config.structuring_amount_target,
+            self.config.structuring_amount_sigma,
+            size=int(n),
+        ).clip(50_000, 950_000)
+        N = len(df)
 
-if __name__ == "__main__":
-    main()
+        amount_arr = np.full(N, np.nan, dtype=np.float64)
+        amount_arr[mask.to_numpy()] = struct_amounts
+        round_arr = np.full(N, np.nan, dtype=np.float64)
+        round_arr[mask.to_numpy()] = self.config.structuring_roundness_threshold
+        entropy_arr = np.full(N, np.nan, dtype=np.float64)
+        entropy_arr[mask.to_numpy()] = self.config.structuring_entropy_threshold
+
+        return df.with_columns([
+            pl.when(mask)
+            .then(pl.Series(amount_arr))
+            .otherwise(pl.col("amount"))
+            .alias("amount"),
+            pl.when(mask)
+            .then(pl.Series(round_arr))
+            .otherwise(pl.col("amount_roundness"))
+            .alias("amount_roundness"),
+            pl.when(mask)
+            .then(pl.Series(entropy_arr))
+            .otherwise(pl.col("structuring_amount_entropy"))
+            .alias("structuring_amount_entropy"),
+            pl.when(mask)
+            .then(pl.lit(True))
+            .otherwise(pl.col("anomaly_flag"))
+            .alias("anomaly_flag"),
+        ])
+
+    def _inject_velocity_funnel(
+        self, df: pl.DataFrame, mask: pl.Series
+    ) -> pl.DataFrame:
+        """High velocity, bursty patterns suggesting a funnel account."""
+        N = len(df)
+        mask_np = mask.to_numpy()
+        tx1h_arr = np.zeros(N, dtype=np.int64)
+        tx1h_arr[mask_np] = self.config.funnel_tx_count_1h
+        tx24h_arr = np.zeros(N, dtype=np.int64)
+        tx24h_arr[mask_np] = self.config.funnel_tx_count_24h
+        burst_arr = np.zeros(N, dtype=np.float64)
+        burst_arr[mask_np] = self.config.funnel_burst_ratio
+        funnel_arr = np.zeros(N, dtype=np.float64)
+        funnel_arr[mask_np] = self.config.funnel_score_target
+
+        return df.with_columns([
+            pl.when(mask).then(pl.Series(tx1h_arr)).otherwise(pl.col("tx_count_1h")).alias("tx_count_1h"),
+            pl.when(mask).then(pl.Series(tx24h_arr)).otherwise(pl.col("tx_count_24h")).alias("tx_count_24h"),
+            pl.when(mask).then(pl.Series(burst_arr)).otherwise(pl.col("burst_ratio")).alias("burst_ratio"),
+            pl.when(mask).then(pl.Series(funnel_arr)).otherwise(pl.col("funnel_score")).alias("funnel_score"),
+            pl.when(mask).then(pl.lit(True)).otherwise(pl.col("anomaly_flag")).alias("anomaly_flag"),
+        ])
+
+    def _inject_mule_activity(
+        self, df: pl.DataFrame, mask: pl.Series
+    ) -> pl.DataFrame:
+        """Pass-through mule: high pass-through, near-zero retention."""
+        N = len(df)
+        mask_np = mask.to_numpy()
+        pt_arr = np.zeros(N, dtype=np.float64)
+        pt_arr[mask_np] = self.config.mule_pass_through_ratio
+        zbf_arr = np.zeros(N, dtype=np.float64)
+        zbf_arr[mask_np] = self.config.mule_zero_balance_freq
+        ret_arr = np.zeros(N, dtype=np.float64)
+        ret_arr[mask_np] = self.config.mule_retention_ratio
+        dep_arr = np.zeros(N, dtype=np.float64)
+        dep_arr[mask_np] = self.config.mule_depletion_rate
+
+        return df.with_columns([
+            pl.when(mask).then(pl.Series(pt_arr)).otherwise(pl.col("pass_through_ratio")).alias("pass_through_ratio"),
+            pl.when(mask).then(pl.Series(zbf_arr)).otherwise(pl.col("zero_balance_frequency")).alias("zero_balance_frequency"),
+            pl.when(mask).then(pl.Series(ret_arr)).otherwise(pl.col("balance_retention_ratio")).alias("balance_retention_ratio"),
+            pl.when(mask).then(pl.Series(dep_arr)).otherwise(pl.col("balance_depletion_rate")).alias("balance_depletion_rate"),
+            pl.when(mask).then(pl.lit(True)).otherwise(pl.col("anomaly_flag")).alias("anomaly_flag"),
+        ])
+
+    def _inject_layering(
+        self, df: pl.DataFrame, mask: pl.Series
+    ) -> pl.DataFrame:
+        """Network layering: high centrality, low reciprocity, many new relationships."""
+        N = len(df)
+        mask_np = mask.to_numpy()
+        deg_arr = np.zeros(N, dtype=np.float64)
+        deg_arr[mask_np] = self.config.layering_degree_centrality
+        rec_arr = np.zeros(N, dtype=np.float64)
+        rec_arr[mask_np] = self.config.layering_reciprocity
+        newrel_arr = np.zeros(N, dtype=np.int64)
+        newrel_arr[mask_np] = self.config.layering_new_relationships
+        bshift_arr = np.zeros(N, dtype=np.float64)
+        bshift_arr[mask_np] = self.config.layering_behavioural_shift
+
+        return df.with_columns([
+            pl.when(mask).then(pl.Series(deg_arr)).otherwise(pl.col("degree_centrality")).alias("degree_centrality"),
+            pl.when(mask).then(pl.Series(rec_arr)).otherwise(pl.col("reciprocity_ratio")).alias("reciprocity_ratio"),
+            pl.when(mask).then(pl.Series(newrel_arr)).otherwise(pl.col("new_relationships_7d")).alias("new_relationships_7d"),
+            pl.when(mask).then(pl.Series(bshift_arr)).otherwise(pl.col("behavioral_shift_score")).alias("behavioral_shift_score"),
+            pl.when(mask).then(pl.lit(True)).otherwise(pl.col("anomaly_flag")).alias("anomaly_flag"),
+        ])
+
+    def _inject_ceiling_violation(
+        self, df: pl.DataFrame, mask: pl.Series
+    ) -> pl.DataFrame:
+        """Breach CBK regulatory ceiling: TIER_1 account with large tx/balance."""
+        N = len(df)
+        mask_np = mask.to_numpy()
+        amounts = self._rng.normal(
+            self.config.ceiling_violation_amount,
+            10_000.0,
+            size=int(mask.sum()),
+        ).clip(15_000, 200_000)
+        balances = self._rng.normal(
+            self.config.ceiling_post_tx_balance,
+            15_000.0,
+            size=int(mask.sum()),
+        ).clip(60_000, 500_000)
+
+        amt_arr = np.full(N, np.nan, dtype=np.float64)
+        amt_arr[mask_np] = amounts
+        bal_arr = np.full(N, np.nan, dtype=np.float64)
+        bal_arr[mask_np] = balances
+
+        # Build tier-conditioned mask using numpy
+        tier_mask = (df["wallet_tier_encoded"].to_numpy() == self.config.ceiling_min_target_tier_encoded)
+        combined_mask = mask_np & tier_mask
+
+        return df.with_columns([
+            pl.when(pl.Series(combined_mask))
+            .then(pl.Series(amt_arr))
+            .otherwise(pl.col("amount"))
+            .alias("amount"),
+            pl.when(pl.Series(combined_mask))
+            .then(pl.Series(bal_arr))
+            .otherwise(pl.col("post_tx_balance"))
+            .alias("post_tx_balance"),
+            pl.when(pl.Series(combined_mask))
+            .then(pl.Series(bal_arr))
+            .otherwise(pl.col("current_balance"))
+            .alias("current_balance"),
+            pl.when(pl.Series(combined_mask))
+            .then(pl.lit(True))
+            .otherwise(pl.col("anomaly_flag"))
+            .alias("anomaly_flag"),
+        ])
+
+    def _inject_high_risk_country(
+        self, df: pl.DataFrame, mask: pl.Series
+    ) -> pl.DataFrame:
+        """Cross-border to high-risk jurisdiction with large amounts."""
+        N = len(df)
+        mask_np = mask.to_numpy()
+        amounts = self._rng.normal(
+            self.config.high_risk_amount,
+            25_000.0,
+            size=int(mask.sum()),
+        ).clip(100_000, 500_000)
+
+        amt_arr = np.full(N, np.nan, dtype=np.float64)
+        amt_arr[mask_np] = amounts
+
+        return df.with_columns([
+            pl.when(mask)
+            .then(pl.Series(amt_arr))
+            .otherwise(pl.col("amount"))
+            .alias("amount"),
+            pl.when(mask)
+            .then(pl.lit(self.config.high_risk_country_code))
+            .otherwise(pl.col("receiver_county"))
+            .alias("receiver_county"),
+            pl.when(mask)
+            .then(pl.lit(True))
+            .otherwise(pl.col("anomaly_flag"))
+            .alias("anomaly_flag"),
+        ])
+
+    def _inject_circular_trading(
+        self, df: pl.DataFrame, mask: pl.Series
+    ) -> pl.DataFrame:
+        """Circular flow within same community with high clustering."""
+        N = len(df)
+        mask_np = mask.to_numpy()
+        amounts = self._rng.normal(
+            self.config.circular_amount_mean,
+            self.config.circular_amount_sigma,
+            size=int(mask.sum()),
+        ).clip(10_000, 150_000)
+
+        # Pick random community IDs from non-anomalous data
+        existing_communities = df.filter(mask.not_()).get_column("community_id").unique().to_list()
+        if not existing_communities:
+            existing_communities = [0]
+        community_ids = list(self._rng.choice(existing_communities, size=int(mask.sum())))
+
+        amt_arr = np.full(N, np.nan, dtype=np.float64)
+        amt_arr[mask_np] = amounts
+        comm_arr = np.full(N, np.nan, dtype=np.float64)
+        comm_arr[mask_np] = community_ids
+
+        return df.with_columns([
+            pl.when(mask)
+            .then(pl.Series(amt_arr))
+            .otherwise(pl.col("amount"))
+            .alias("amount"),
+            pl.when(mask)
+            .then(pl.Series(comm_arr))
+            .otherwise(pl.col("community_id"))
+            .alias("community_id"),
+            pl.when(mask)
+            .then(pl.lit(self.config.circular_clustering))
+            .otherwise(pl.col("degree_centrality"))
+            .alias("degree_centrality"),
+            pl.when(mask)
+            .then(pl.lit(True))
+            .otherwise(pl.col("anomaly_flag"))
+            .alias("anomaly_flag"),
+        ])
+
+    def _inject_temporal_anomaly(
+        self, df: pl.DataFrame, mask: pl.Series
+    ) -> pl.DataFrame:
+        """Off-hours activity with device churn and high location entropy."""
+        N = len(df)
+        mask_np = mask.to_numpy()
+        hod_arr = np.zeros(N, dtype=np.int64)
+        hod_arr[mask_np] = self.config.temporal_anomalous_hour
+        dev_arr = np.zeros(N, dtype=np.int64)
+        dev_arr[mask_np] = self.config.temporal_device_changes
+        loc_arr = np.zeros(N, dtype=np.float64)
+        loc_arr[mask_np] = self.config.temporal_location_entropy
+
+        return df.with_columns([
+            pl.when(mask)
+            .then(pl.Series(hod_arr))
+            .otherwise(pl.col("hour_of_day"))
+            .alias("hour_of_day"),
+            pl.when(mask)
+            .then(pl.Series(dev_arr))
+            .otherwise(pl.col("device_changes_7d"))
+            .alias("device_changes_7d"),
+            pl.when(mask)
+            .then(pl.Series(loc_arr))
+            .otherwise(pl.col("location_entropy"))
+            .alias("location_entropy"),
+            pl.when(mask)
+            .then(pl.lit(True))
+            .otherwise(pl.col("anomaly_flag"))
+            .alias("anomaly_flag"),
+            pl.when(mask)
+            .then(pl.lit(True))
+            .otherwise(pl.col("is_anomalous_hour"))
+            .alias("is_anomalous_hour"),
+        ])

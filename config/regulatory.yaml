@@ -1,5 +1,5 @@
-# POCAMLA / CBK regulatory thresholds for M-Pesa AML compliance.
-# Loaded by src.data.pipelines and validated by src.data.validators.
+# Regulatory configuration for sentinAI AML system
+# Aligned with CBK PG/43 guidelines for mobile money KYC tier limits
 
 metadata:
   version: "pocamla.fy26.1"
@@ -13,70 +13,108 @@ temporal:
 
 kyc_tiers:
   TIER_1:
-    balance_cap_kes: 50000
-    daily_velocity_cap_kes: 100000
+    name: "Basic"
+    description: "Basic registration - SIM registration only"
+    proportion: 0.60
+    balance_cap_kes: 50000              # CBK: max wallet KES 50,000
+    daily_velocity_cap_kes: 25000       # CBK: max daily cumulative KES 25,000
+    max_single_transaction_kes: 10000   # CBK: max single tx KES 10,000
   TIER_2:
-    balance_cap_kes: 500000
-    daily_velocity_cap_kes: 1000000
-  VENDOR_MERCHANT:
-    balance_cap_kes: 5000000
-    daily_velocity_cap_kes: 10000000
+    name: "Interim"
+    description: "Interim KYC - self-declared details"
+    proportion: 0.20
+    balance_cap_kes: 200000             # CBK: max wallet KES 200,000
+    daily_velocity_cap_kes: 100000      # CBK: max daily cumulative KES 100,000
+    max_single_transaction_kes: 50000   # CBK: max single tx KES 50,000
+  TIER_3:
+    name: "Full KYC"
+    description: "Full KYC - National ID + Proof of Address"
+    proportion: 0.15
+    balance_cap_kes: 1000000            # CBK: max wallet KES 1,000,000
+    daily_velocity_cap_kes: 500000      # CBK: max daily cumulative KES 500,000
+    max_single_transaction_kes: 150000  # CBK: max single tx KES 150,000
+  TIER_4:
+    name: "EDD"
+    description: "Enhanced Due Diligence - Corporate/Institutional"
+    proportion: 0.05
+    balance_cap_kes: 5000000            # No CBK cap — soft limit
+    daily_velocity_cap_kes: 10000000    # No CBK cap — soft limit
+    max_single_transaction_kes: 500000  # CBK: max single tx KES 500,000
 
 allowed_values:
   kyc_tier_level:
     - TIER_1
     - TIER_2
-    - VENDOR_MERCHANT
+    - TIER_3
+    - TIER_4
   counterparty_risk_tier:
     - LOW
     - MEDIUM
     - HIGH
   transaction_type:
-    - P2P
-    - C2B
-    - B2C
-    - B2B
-    - STK_Push
-    - Withdrawal
+    - send_money
+    - received_money
+    - agent_deposit
+    - agent_withdrawal
+    - lipa_paybill
+    - lipa_buygoods
+    - bank_transfer
   channel:
-    - USSD
-    - App
-    - Web
-    - API
+    - mobile_app
+    - ussd
+    - agent
+    - web
   region:
-    - Nairobi
-    - Mombasa
-    - Kisumu
-    - Nakuru
+    - urban
+    - rural
   anomaly_type:
-    - NONE
-    - VELOCITY_SURGE
-    - AMOUNT_SPIKE
-    - SMURFING
-    - ROUND_NUMBER_CHURN
-    - REGULATORY_CEILING_VIOLATION
+    - none
+    - structuring
+    - velocity_alert
+    - tier_breach
+    - round_amount
+    - high_risk_counterparty
+    - rapid_credit_debit
+    - amount_anomaly
   regulatory_report_status:
-    - NOT_TRIGGERED
-    - SUSPICIOUS_ACTIVITY_FLAGGED
-    - ESCALATED_TO_FIU
-
-anomaly_detection:
-  amount_spike_multiplier: 3.0
-  smurfing_max_amount_kes: 10000
-  smurfing_min_daily_count: 5
-  round_number_modulus: 1000
-  round_number_min_daily_count: 3
+    - none
+    - ctr_filed
+    - sar_filed
+    - pending_review
 
 defaults:
-  kyc_tier_level: TIER_1
+  anomaly_type: NONE
   counterparty_risk_tier: LOW
   transaction_type: P2P
   channel: USSD
   region: Nairobi
-  anomaly_type: NONE
   regulatory_report_status: NOT_TRIGGERED
-  counterparty_id_prefix: "CP_UNKNOWN_"
+  counterparty_id_prefix: CP_UNKNOWN_
+
+anomaly_detection:
+  amount_spike_multiplier: 3.0
+  smurfing_max_amount_kes: 100000
+  smurfing_min_daily_count: 3
+  smurfing_min_window_minutes: 5
+  round_number_modulus: 1000
+  round_number_min_daily_count: 3
+  velocity_max_tx_per_day: 20
+  velocity_max_daily_volume_kes: 100000
+  rapid_credit_debit_window_minutes: 10
+  rapid_credit_debit_min_tx_count: 3
+  amount_anomaly_z_score_threshold: 3.0
 
 dead_letter:
-  enabled: true
-  output_path: "data/dead_letter/bronze_rejects"
+  max_retries: 3
+  storage_path: "data/dead_letter"
+
+reporting:
+  currency_transaction_report_threshold: 1000000
+  structuring_patterns_threshold: 100000
+
+transaction_restrictions:
+  international_transfers:
+    allowed_tiers: [TIER_3, TIER_4]
+  high_value_merchant:
+    allowed_tiers: [TIER_2, TIER_3, TIER_4]
+    min_threshold: 50000
