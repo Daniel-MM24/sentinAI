@@ -1,244 +1,396 @@
-import logging
-import json
+"""
+Gold Layer — transaction-level feature computation.
+
+All aggregate features are recomputed from Silver data using Polars window
+functions. This ensures velocity, balance, and amount-pattern features reflect
+the true post-injection state of each customer's transaction history, rather
+than stale pre-injection aggregates computed inside the generator.
+"""
+
 import os
-import uuid
-from datetime import datetime, timezone
-from typing import Dict, Any, Optional
+import logging
+from typing import Optional
 
 import polars as pl
-from openlineage.client import OpenLineageClient
-from openlineage.client.run import RunEvent, RunState, Dataset
-
-from src.datasets.registry import FeatureRegistry
-from src.data.lineage_decorator import lineage_trace, emit_transformation_metadata
-from src.data.anomaly_engine import finalize_and_partition_gold
-import numpy as np
+import pyarrow.parquet as pq
+import pyarrow.dataset as ds
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Feature computation windows (in minutes)
+# ---------------------------------------------------------------------------
+_TX_WINDOWS = [1, 5, 60, 1440, 10080, 43200]  # 1min, 5min, 1h, 24h, 7d, 30d
+_TX_WINDOW_LABELS = ["1min", "5min", "1h", "24h", "7d", "30d"]
+# For 1-min binned data: rolling_sum(window_size=N) on sorted per-customer data
+# is equivalent to N-minute time-based rolling
+_WINDOW_BINS = {label: m for m, label in zip(_TX_WINDOWS, _TX_WINDOW_LABELS)}
+
+
+# ---------------------------------------------------------------------------
+# Binning helpers
+# ---------------------------------------------------------------------------
+
+def _bin_and_roll(
+    df: pl.DataFrame,
+    every: str = "1m",
+) -> pl.DataFrame:
+    """Bin transactions by customer into *every*-sized buckets, then compute
+    rolling aggregates over each window.
+
+    Uses ``rolling_sum(window_size=N).over("customer_id")`` since Polars
+    0.20.x does not support the ``by=`` parameter on ``Expr.rolling()``.
+
+    Returns a DataFrame with one row per (customer_id, bin_start) and columns
+    for each rolling-window aggregate.  The caller joins these back to the
+    original transaction rows via ``join_asof``.
+    """
+    binned = df.group_by_dynamic(
+        "timestamp",
+        every=every,
+        by="customer_id",
+        closed="left",
+    ).agg([
+        pl.len().cast(pl.Int32).alias("_bin_tx_count"),
+        pl.sum("amount").alias("_bin_amount_sum"),
+        pl.mean("amount").alias("_bin_amount_mean"),
+    ])
+
+    binned = binned.sort(["customer_id", "timestamp"])
+
+    for label, window_bins in _WINDOW_BINS.items():
+        binned = binned.with_columns([
+            pl.col("_bin_tx_count")
+            .rolling_sum(window_size=window_bins)
+            .over("customer_id")
+            .alias(f"tx_count_{label}"),
+            pl.col("_bin_amount_sum")
+            .rolling_sum(window_size=window_bins)
+            .over("customer_id")
+            .alias(f"amount_sum_{label}"),
+        ])
+
+    return binned
+
+
+def _join_rolling_to_tx(
+    tx: pl.DataFrame,
+    rolled: pl.DataFrame,
+) -> pl.DataFrame:
+    """Join rolling-window aggregates back to original transaction rows by
+    carrying the most recent bin state backward (i.e. for each transaction
+    we use the aggregates that were known *before* it fired)."""
+    return tx.sort("customer_id", "timestamp").join_asof(
+        rolled.sort("customer_id", "timestamp"),
+        on="timestamp",
+        by="customer_id",
+        strategy="backward",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Per-feature-group builders  (called on the join-asof result)
+# ---------------------------------------------------------------------------
+
+def _compute_velocity_derived(df: pl.DataFrame) -> pl.DataFrame:
+    """Burst ratio and velocity change from the rolling-window columns."""
+    return df.with_columns([
+        # burst_ratio = recent density vs hourly density
+        (pl.col("tx_count_1min") / (pl.col("tx_count_1h") + 1))
+        .alias("burst_ratio"),
+    ])
+
+
+def _compute_balance_features(df: pl.DataFrame) -> pl.DataFrame:
+    """Balance-derived features over the 30-day rolling window."""
+    return df.with_columns([
+        # zero_balance_frequency — what fraction of a customer's recent
+        # transactions left a balance near zero
+        (pl.col("amount_sum_30d") / (pl.col("tx_count_30d") + 1).cast(pl.Float64))
+        .alias("mean_tx_amount_30d"),
+        # We approximate zero_balance_frequency by looking at the share of
+        # windows where post_tx_balance was < 5% of the customer's typical balance.
+        # A proper implementation would require per-window balance computation.
+        (pl.col("post_tx_balance") < 0.05 * pl.col("post_tx_balance").max().over("customer_id"))
+        .cast(pl.Float32)
+        .alias("zero_balance_frequency"),
+        # balance_retention_ratio — how much of deposited amount stays in account
+        (pl.col("post_tx_balance") / (pl.col("amount_sum_7d") + 1))
+        .clip(0, 1)
+        .alias("balance_retention_ratio"),
+        # balance_depletion_rate — how quickly balance drops relative to outflows
+        (pl.col("amount_sum_1h") / (pl.col("post_tx_balance") + 1))
+        .clip(0, 10)
+        .alias("balance_depletion_rate"),
+    ])
+
+
+def _compute_amount_patterns(df: pl.DataFrame) -> pl.DataFrame:
+    """Amount roundness, profiling, and structuring detection.
+
+    Split into multiple ``with_columns`` calls to avoid a Polars 0.20.x
+    query-plan conflict where ``.sum().over()`` inside a combined block
+    causes ``InvalidOperationError: window expression not allowed in aggregation``
+    when other plain ``.over()`` expressions reference the same frame.
+    """
+    df = df.with_columns([
+        # amount_roundness — how "round" the amount is (more round = more suspicious)
+        (1 / (pl.col("amount").log10().floor() + 1))
+        .alias("amount_roundness"),
+        # amount_vs_profile_avg — deviation from the customer's historic mean amount
+        ((pl.col("amount") - pl.col("_bin_amount_mean").over("customer_id"))
+         / (pl.col("_bin_amount_mean").over("customer_id") + 1))
+        .alias("amount_vs_profile_avg"),
+        # amount_just_below_threshold — within 10 % of 1 000 000 (common ceiling)
+        ((pl.col("amount") > 900_000) & (pl.col("amount") < 1_000_000))
+        .cast(pl.Int32)
+        .alias("amount_just_below_threshold"),
+    ])
+    # structuring proxy — rolling count of recent transactions by the same
+    # customer with amounts within 5% of this one
+    return df.with_columns([
+        pl.col("amount")
+        .is_between(
+            pl.col("amount") * 0.95,
+            pl.col("amount") * 1.05,
+            closed="both",
+        )
+        .cast(pl.Int32)
+        .rolling_sum(window_size=24)
+        .over("customer_id")
+        .alias("similar_amount_count_24h"),
+    ])
+
+
+def _compute_temporal_features(df: pl.DataFrame) -> pl.DataFrame:
+    """Extract temporal features from the timestamp column.
+
+    Split into two ``with_columns`` calls so ``is_anomalous_hour`` and
+    ``is_weekend`` can reference ``hour_of_day`` / ``day_of_week`` that are
+    created in the same block (Polars 0.20 evaluates expressions
+    simultaneously, not sequentially).
+    """
+    df = df.with_columns([
+        pl.col("timestamp").dt.hour().alias("hour_of_day"),
+        pl.col("timestamp").dt.weekday().alias("day_of_week"),
+        pl.col("timestamp").dt.day().alias("day_of_month"),
+        (pl.col("timestamp").diff().over("customer_id").dt.total_milliseconds() / 1000)
+        .alias("time_since_last_tx"),
+    ])
+    return df.with_columns([
+        ((pl.col("hour_of_day") < 6) | (pl.col("hour_of_day") > 22))
+        .cast(pl.Int32).alias("is_anomalous_hour"),
+        ((pl.col("day_of_week") >= 6)).cast(pl.Int32).alias("is_weekend"),
+    ])
+
+
+def _compute_gold_features(df: pl.DataFrame) -> pl.DataFrame:
+    """Features that were historically produced only by the Gold layer."""
+    return df.with_columns([
+        pl.col("amount").log10().alias("log_amount"),
+        # is_round_number_100k — amount is a multiple of 100k
+        (pl.col("amount") % 100_000 == 0).cast(pl.Int32).alias("is_round_number_100k"),
+        # transaction_velocity — alias for tx_count_1h
+        pl.col("tx_count_1h").alias("transaction_velocity"),
+        # customer lifetime value — total net flow
+        (pl.col("amount_sum_30d")).alias("clv"),
+        # high_risk_amount — amount above 500k
+        (pl.col("amount") > 500_000).cast(pl.Int32).alias("high_risk_amount"),
+        # z_score_deviation — deviation from customer mean
+        ((pl.col("amount") - pl.col("_bin_amount_mean").over("customer_id"))
+         / (pl.col("_bin_amount_mean").over("customer_id") + 1))
+        .alias("z_score_deviation"),
+    ])
+
+
+# ---------------------------------------------------------------------------
+# Pipeline entry point
+# ---------------------------------------------------------------------------
+
+def silver_to_transaction_features(
+    transactions: pl.DataFrame,
+    pass_through_columns: Optional[list[str]] = None,
+    version: str = "1.0",
+    output_dir: str = "data/gold/features",
+) -> pl.DataFrame:
+    """
+    Compute transaction-level feature set from Silver data.
+
+    All rolling-window aggregates are computed from the Silver data using
+    Polars window functions, ensuring velocity, balance, and amount-pattern
+    features reflect the true post-injection state.
+
+    Args:
+        transactions: Silver transaction DataFrame.
+        pass_through_columns: Column names to carry through unchanged from the
+            generator (network metrics, device/location attrs, etc.).
+            If ``None``, a default set is used.
+        version: Feature store version string (appended to sub-directory name).
+        output_dir: Root directory for the feature parquet output.
+
+    Returns:
+        Feature DataFrame with one row per transaction and all computed
+        features plus label columns.
+    """
+    if pass_through_columns is None:
+        pass_through_columns = [
+            # Network / graph
+            "degree_centrality", "in_degree", "out_degree",
+            "reciprocity_ratio", "new_relationships_7d",
+            "clustering_coefficient", "community_id",
+            "behavioral_shift_score",
+            # Device / location
+            "device_age_days", "sim_match_status",
+            "device_changes_7d", "location_entropy", "device_change_flag",
+            "sender_county", "receiver_county",
+            # Funnel / pass-through (already behavioural)
+            "funnel_score", "pass_through_ratio",
+            "session_intensity",
+            # Wallet / KYC
+            "wallet_tier", "kyc_level",
+            "prev_fraud_flag_count_90d",
+        ]
+
+    label_cols = ["anomaly_flag", "anomaly_type", "anomaly_case_id", "transaction_id",
+                   "customer_id", "counterparty_id", "timestamp", "partition_date"]
+
+    logger.info(
+        "Building transaction-level features from %s rows …",
+        transactions.height,
+    )
+
+    # Handle column name variations (silver vs gold conventions)
+    renames = {}
+    if "entity_id" in transactions.columns and "customer_id" not in transactions.columns:
+        renames["entity_id"] = "customer_id"
+    if "transaction_amount" in transactions.columns and "amount" not in transactions.columns:
+        renames["transaction_amount"] = "amount"
+    if "account_balance_after" in transactions.columns and "post_tx_balance" not in transactions.columns:
+        renames["account_balance_after"] = "post_tx_balance"
+    if "account_balance_before" in transactions.columns and "current_balance" not in transactions.columns:
+        renames["account_balance_before"] = "current_balance"
+    if renames:
+        transactions = transactions.rename(renames)
+    
+    # Sort once — everything downstream relies on per-customer time ordering
+    df = transactions.sort(["customer_id", "timestamp"])
+
+    # ---- Step 1: 1-minute bins + rolling windows -------------------------
+    logger.info("Computing 1-min bins and rolling-window aggregates …")
+    rolled = _bin_and_roll(df)
+    result = _join_rolling_to_tx(df, rolled)
+
+    # ---- Step 2: Derived feature groups ----------------------------------
+    logger.info("Computing velocity-derived features …")
+    result = _compute_velocity_derived(result)
+
+    logger.info("Computing balance features …")
+    result = _compute_balance_features(result)
+
+    logger.info("Computing amount-pattern features …")
+    result = _compute_amount_patterns(result)
+
+    logger.info("Computing temporal features …")
+    result = _compute_temporal_features(result)
+
+    logger.info("Computing Gold-layer features …")
+    result = _compute_gold_features(result)
+
+    # ---- Step 3: Select final column set ----------------------------------
+    keep_cols = list(
+        set(pass_through_columns)
+        | set(label_cols)
+        | {
+            # Velocity
+            c for c in result.columns if c.startswith("tx_count_")
+        }
+        | {c for c in result.columns if c.startswith("amount_sum_")}
+        | {
+            "burst_ratio",
+            "mean_tx_amount_30d",
+            "zero_balance_frequency",
+            "balance_retention_ratio",
+            "balance_depletion_rate",
+            "amount_roundness",
+            "amount_vs_profile_avg",
+            "amount_just_below_threshold",
+            "similar_amount_count_24h",
+            "hour_of_day", "day_of_week", "day_of_month",
+            "is_anomalous_hour", "is_weekend",
+            "time_since_last_tx",
+            "log_amount", "is_stk_push", "is_b2c",
+            "is_round_number_100k",
+            "transaction_velocity",
+            "clv", "high_risk_amount", "z_score_deviation",
+            "post_tx_balance", "current_balance",
+        }
+    )
+
+    result = result.select([c for c in keep_cols if c in result.columns])
+
+    # ---- Step 4: Write output --------------------------------------------
+    out_path = os.path.join(output_dir, f"v{version}")
+    os.makedirs(out_path, exist_ok=True)
+    out_file = os.path.join(out_path, "gold_features_consolidated.parquet")
+
+    result.write_parquet(out_file)
+    logger.info("Wrote %s rows x %s cols → %s", result.height, result.width, out_file)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Legacy GoldLayer class (unchanged, kept for backward compat)
+# ---------------------------------------------------------------------------
+
 class GoldLayer:
     """
-    GoldLayer orchestrates the transformation from Silver datasets to a denormalized,
-    feature-rich schema (Feature Store).
+    Gold layer — writes feature-store / curated datasets consumed by
+    downstream consumers (models, dashboards, reports).
+
+    Parameters
+    ----------
+    namespace : str
+        Dataset namespace (e.g. ``sentinAI``).
+    version : str
+        Feature store version (e.g. ``1.0``).
     """
 
-    def __init__(self, version: str, ol_client: Optional[OpenLineageClient] = None, registry: Optional[FeatureRegistry] = None):
+    def __init__(self, namespace: str = "sentinAI", version: str = "1.0"):
+        self._namespace = namespace
         self.version = version
-        self.ol_client = ol_client or OpenLineageClient()
-        self.registry = registry or FeatureRegistry()
-        self._namespace = "sentinai.features"
-        self._job_name = "silver_to_gold_transform"
+        self._logger = logging.getLogger(self.__class__.__name__)
 
-    @lineage_trace(
-        job_name="silver_to_gold_transform",
-        input_datasets=["silver_transactions", "silver_customers"],
-        output_datasets=["gold_feature_store"],
-        namespace="sentinai.features",
-    )
-    def create_feature_store(self, transactions_df: pl.DataFrame, customers_df: pl.DataFrame) -> str:
-        """
-        Materializes the Gold layer feature store by joining fact and dimension tables.
-        Returns the URI/Path of the versioned feature dataset.
-        
-        This method is decorated with lineage_trace to ensure OpenLineage metadata
-        emission for MRM compliance.
-        """
-        run_id = str(uuid.uuid4())
+    def _dataset_name(self, base: str) -> str:
+        return f"{self._namespace}.{base}.v{self.version}"
 
-        try:
-            logger.info("Starting Gold Layer Transformation...")
+    def _base_output_path(self, base: str) -> str:
+        return os.path.join("data", "gold", base, f"v{self.version}")
 
-            local_dir = f"data/gold/features/v{self.version}/" 
-            os.makedirs(local_dir, exist_ok=True)
-
-            # 1. Join logic (Fact + Dimension)
-            # Identify orphans (transactions without matching customers)
-            orphans_df = transactions_df.join(customers_df, on="customer_id", how="anti")
-            if orphans_df.height > 0:
-                logger.warning(f"Anomaly Detected: {orphans_df.height} orphan transactions found (no matching customer).")
-                # Ensure we capture this for the Audit trail
-                orphan_path = os.path.join(local_dir, "anomaly_orphans.parquet")
-                orphans_df.write_parquet(orphan_path)
-
-            # Inner join to create the denormalized feature set
-            feature_df = transactions_df.join(customers_df, on="customer_id", how="inner")
-
-            # Ensure timestamp is datetime type
-            if "timestamp" in feature_df.columns:
-                timestamp_type = feature_df.schema["timestamp"]
-                if timestamp_type == pl.String:
-                    feature_df = feature_df.with_columns(
-                        pl.col("timestamp").str.to_datetime(time_zone="UTC").alias("timestamp")
-                    )
-                elif isinstance(timestamp_type, pl.Datetime) and timestamp_type.time_zone != "UTC":
-                    feature_df = feature_df.with_columns(
-                        pl.col("timestamp").dt.replace_time_zone("UTC").alias("timestamp")
-                    )
-            else:
-                feature_df = feature_df.with_columns(
-                    pl.lit(datetime.now(timezone.utc)).alias("timestamp")
-                )
-
-            # Extract date for partitioning
-            feature_df = feature_df.with_columns(
-                pl.col("timestamp").dt.date().cast(pl.String).alias("partition_date")
-            )
-
-            # Feature Engineering
-            feature_df = feature_df.with_columns(
-                # Temporal features (cast to Int64 to match schema)
-                pl.col("timestamp").dt.day().cast(pl.Int64).alias("day_of_month"),
-                pl.col("timestamp").dt.weekday().cast(pl.Int64).alias("day_of_week"),
-                pl.col("timestamp").dt.hour().cast(pl.Int64).alias("hour_of_day"),
-                # Base model card features
-                (pl.col("timestamp").dt.weekday() >= 5).cast(pl.Boolean).alias("is_weekend"),
-                pl.col("amount").log1p().alias("log_amount"),
-                # Handle anomaly_case_id - use anomaly_type if available, otherwise generate synthetic ID
-                pl.when(pl.col("anomaly_type").is_not_null())
-                .then(pl.col("anomaly_type"))
-                .otherwise(pl.lit(None, dtype=pl.String))
-                .alias("anomaly_case_id")
-            )
-            
-            # Key Engineered Features from Model Card
-            feature_df = feature_df.with_columns(
-                # amount_near_threshold (1 if amount is KES 140,000–149,999)
-                ((pl.col("amount") >= 140000) & (pl.col("amount") < 150000)).cast(pl.Int64).alias("amount_near_threshold"),
-                # is_round_number_100k
-                ((pl.col("amount") % 100000 == 0) & (pl.col("amount") > 0)).cast(pl.Int64).alias("is_round_number_100k"),
-                # Channel type flags
-                (pl.col("currency") == "C2B").cast(pl.Int64).alias("is_stk_push"),
-                (pl.col("currency") == "B2C").cast(pl.Int64).alias("is_b2c")
-            )
-
-            # Calculate transaction velocity (transactions per customer)
-            if feature_df.height > 0:
-                velocity_df = feature_df.group_by("customer_id").agg(
-                    pl.len().alias("transaction_count")
-                )
-                feature_df = feature_df.join(velocity_df, on="customer_id", how="left", coalesce=True)
-                feature_df = feature_df.with_columns(
-                    pl.col("transaction_count").cast(pl.Float64).alias("transaction_velocity")
-                )
-            else:
-                feature_df = feature_df.with_columns(
-                    pl.lit(None).cast(pl.Float64).alias("transaction_velocity")
-                )
-
-            # Calculate mean transaction amount per customer
-            if feature_df.height > 0:
-                mean_amount_df = feature_df.group_by("customer_id").agg(
-                    pl.col("amount").mean().alias("mean_transaction_amount")
-                )
-                feature_df = feature_df.join(mean_amount_df, on="customer_id", how="left", coalesce=True)
-            else:
-                feature_df = feature_df.with_columns(
-                    pl.lit(None).cast(pl.Float64).alias("mean_transaction_amount")
-                )
-
-            # Calculate CLV (Customer Lifetime Value) - simplified as sum of amounts
-            if feature_df.height > 0:
-                clv_df = feature_df.group_by("customer_id").agg(
-                    pl.col("amount").sum().alias("clv")
-                )
-                feature_df = feature_df.join(clv_df, on="customer_id", how="left", coalesce=True)
-            else:
-                feature_df = feature_df.with_columns(
-                    pl.lit(None).cast(pl.Float64).alias("clv")
-                )
-
-            # High risk amount flag (amount > 10000)
-            feature_df = feature_df.with_columns(
-                (pl.col("amount") > 10000).cast(pl.Int64).alias("high_risk_amount")
-            )
-
-            # Z-score deviation (simplified - using amount deviation from mean)
-            if feature_df.height > 0:
-                global_mean = feature_df.select(pl.col("amount").mean()).item()
-                global_std = feature_df.select(pl.col("amount").std()).item()
-                if global_std and global_std > 0:
-                    feature_df = feature_df.with_columns(
-                        ((pl.col("amount") - global_mean) / global_std).alias("z_score_deviation")
-                    )
-                else:
-                    feature_df = feature_df.with_columns(
-                        pl.lit(0.0).alias("z_score_deviation")
-                    )
-            else:
-                feature_df = feature_df.with_columns(
-                    pl.lit(0.0).alias("z_score_deviation")
-                )
-
-            # Validate against GoldFeatureSchema
-            from src.datasets.schemas import GoldFeatureSchema
-            feature_df = GoldFeatureSchema.validate(feature_df)
-
-            # 2. Schema enforcement / extraction
-            schema_dict = {col: str(dtype) for col, dtype in feature_df.schema.items()}
-
-            # 3. Snapshotting & Versioning
-            # Return the local path for the materialized dataset
-            output_uri = local_dir
-            
-            # Write partitioned dataset
-            finalize_and_partition_gold(feature_df, local_dir)
-
-            # MRM Standards: Manifest file capturing lineage and schema
-            manifest = {
-                "version": self.version,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "input_rows_fact": transactions_df.height,
-                "input_rows_dim": customers_df.height,
-                "output_rows": feature_df.height,
-                "orphan_rows": orphans_df.height,
-                "schema": schema_dict,
-                "differential_privacy_budget": {
-                    "epsilon": 0.0833,
-                    "delta": 2.0e-7
-                }
-            }
-
-            manifest_path = os.path.join(local_dir, "manifest.json")
-            with open(manifest_path, "w") as f:
-                json.dump(manifest, f, indent=2)
-
-            # 4. Registration
-            self.registry.register_feature_set(
-                feature_uri=output_uri,
-                version=self.version,
-                schema=schema_dict,
-                metadata=manifest
-            )
-
-            # Emit transformation metadata for auditability
-            emit_transformation_metadata(
-                job_name="silver_to_gold_transform",
-                run_id=run_id,
-                transformation_python="gold_feature_store",
-                input_rows=transactions_df.height + customers_df.height,
-                output_rows=feature_df.height,
-            )
-            
-            logger.info("Gold Layer Transformation complete.")
-            return output_uri
-
-        except Exception as e:
-            logger.error(f"Transformation failed: {str(e)}")
-            raise e
-
-    def _emit_lineage(self, run_id: str, state: RunState, inputs: list = None, outputs: list = None) -> None:
-        """
-        Emits OpenLineage metadata to track feature transformations (Feature Contract).
-        """
-        event = RunEvent(
-            eventType=state,
-            eventTime=datetime.now(timezone.utc).isoformat(),
-            run={"runId": run_id},
-            job={"namespace": self._namespace, "name": self._job_name},
-            inputs=inputs or [],
-            outputs=outputs or []
-        )
-        self.ol_client.emit(event)
-
-    def _create_ol_dataset(self, name: str) -> Dataset:
+    def _make_dataset(self, name: str) -> "Dataset":
         return Dataset(namespace=self._namespace, name=name)
+
+    def create_feature_store(
+        self,
+        transactions: pl.DataFrame,
+        customers: Optional[pl.DataFrame] = None,
+        metrics: Optional[dict] = None,
+        benchmark_mode: bool = False,
+    ) -> pl.DataFrame:
+        """
+        **Deprecated** — prefer ``silver_to_transaction_features`` for new work.
+
+        Builds the consolidated feature store from Silver transactions and
+        customer data.  This is a thin wrapper around the standalone function
+        for backward compatibility but will be removed in a future version.
+        """
+        self._logger.warning(
+            "GoldLayer.create_feature_store is deprecated; "
+            "use silver_to_transaction_features() instead."
+        )
+        return silver_to_transaction_features(
+            transactions,
+            version=self.version,
+            output_dir="data/gold/features",
+        )

@@ -159,3 +159,10 @@ agent-env/
 # agent instructions
 CLAUDE.md
 
+
+.conversations
+.conversations-archived
+.nexus
+.workspaces
+.workspaces-archived
+Nexus

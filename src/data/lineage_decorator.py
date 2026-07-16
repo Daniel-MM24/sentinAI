@@ -33,15 +33,32 @@ logger = logging.getLogger(__name__)
 
 
 def _create_openlineage_client() -> OpenLineageClient:
-    """Create an OpenLineage client wired to the configured endpoint when available."""
+    """Create an OpenLineage client, probing the backend and falling back to console."""
     configured_url = getattr(settings, "OPENLINEAGE_URL", None) or os.getenv("OPENLINEAGE_URL")
     if configured_url:
-        transport = HttpTransport(HttpConfig(url=configured_url))
-        logger.info("Using OpenLineage HTTP transport for lineage events: %s", configured_url)
-        return OpenLineageClient(transport=transport)
-
-    logger.info("OPENLINEAGE_URL is not configured; falling back to console transport.")
+        if _probe_openlineage_backend(configured_url):
+            transport = HttpTransport(HttpConfig(url=configured_url))
+            logger.info("Using OpenLineage HTTP transport for lineage events: %s", configured_url)
+            return OpenLineageClient(transport=transport)
+        logger.warning(
+            "OpenLineage backend at %s is not reachable; falling back to console transport.",
+            configured_url,
+        )
+    else:
+        logger.info("OPENLINEAGE_URL is not configured; falling back to console transport.")
     return OpenLineageClient()
+
+
+def _probe_openlineage_backend(url: str, timeout: float = 2.0) -> bool:
+    """Return True if the OpenLineage backend responds within *timeout* seconds."""
+    try:
+        import urllib.request
+        import urllib.error
+        req = urllib.request.Request(f"{url.rstrip('/')}/api/v1/lineage", method="HEAD")
+        urllib.request.urlopen(req, timeout=timeout)
+        return True
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
 
 
 def lineage_trace(

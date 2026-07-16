@@ -7,7 +7,7 @@ readme = "README.md"
 packages = [{include = "src"}]
 
 [tool.poetry.dependencies]
-python = "^3.11"
+python = "^3.12"
 pyarrow = "^24.0.0"
 
 [tool.poetry.group.core.dependencies]
@@ -22,7 +22,8 @@ pandas = "^2.2.1"
 numpy = "^1.26.4"
 shap = "^0.45.0"
 scipy = "^1.13.0"
-xgboost = "^3.3.0"
+xgboost = "<2.1"
+lightgbm = "^4.6.0"
 
 [tool.poetry.group.agent.dependencies]
 langgraph = "^0.3.0"

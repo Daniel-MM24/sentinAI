@@ -249,6 +249,123 @@ class BronzeLayer:
             logger.error(f"Synthetic Bronze ingestion failed: {e}")
             raise
 
+    @lineage_trace(
+        job_name="ingest_normalized_synthetic_to_bronze",
+        input_datasets=["synthetic_generator_normalized"],
+        output_datasets=["bronze_customers", "bronze_transactions"],
+        namespace="sentinai.bronze",
+    )
+    def ingest_normalized_synthetic_data(
+        self,
+        customers_df: pl.DataFrame,
+        transactions_df: pl.DataFrame,
+        source_table: str = "synthetic_transactions",
+        partition_key: Optional[str] = None,
+    ) -> str:
+        """
+        Ingest normalized synthetic data (separate customers and transactions) into Bronze layer.
+        
+        This method handles the new normalized schema where customers and transactions are separate
+        tables with proper primary/foreign key relationships.
+        
+        Args:
+            customers_df: Customer dimension table with customer_id as primary key
+            transactions_df: Transaction fact table with transaction_id as primary key, customer_id as foreign key
+            source_table: Source table name for tracking
+            partition_key: Optional partition key for storage organization
+            
+        Returns:
+            Path to the written Parquet files (customers and transactions)
+        """
+        run_id = str(uuid.uuid4())
+        logger.info(f"Starting normalized synthetic Bronze ingestion (run_id={run_id})")
+        
+        try:
+            partition_path = partition_key or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            
+            # Ingest customers
+            customers_output_dir = self.bronze_base_path / "customers" / partition_path
+            customers_output_dir.mkdir(parents=True, exist_ok=True)
+            customers_output_path = customers_output_dir / f"bronze_customers_{run_id}.parquet"
+            
+            # Add bronze metadata to customers
+            enriched_customers = self._add_bronze_metadata(
+                customers_df, source_table, DataSourceType.SYNTHETIC, synthetic_flag=True
+            )
+            
+            # Write customers to parquet
+            enriched_customers.write_parquet(customers_output_path)
+            logger.info(f"Customers Bronze ingestion complete: {customers_output_path}")
+            
+            # Ingest transactions
+            transactions_output_dir = self.bronze_base_path / "transactions" / partition_path
+            transactions_output_dir.mkdir(parents=True, exist_ok=True)
+            transactions_output_path = transactions_output_dir / f"bronze_transactions_{run_id}.parquet"
+            
+            # Add bronze metadata to transactions
+            enriched_transactions = self._add_bronze_metadata(
+                transactions_df, source_table, DataSourceType.SYNTHETIC, synthetic_flag=True
+            )
+            
+            # Write transactions to parquet
+            enriched_transactions.write_parquet(transactions_output_path)
+            logger.info(f"Transactions Bronze ingestion complete: {transactions_output_path}")
+            
+            # Emit transformation metadata
+            emit_transformation_metadata(
+                job_name="ingest_normalized_synthetic_to_bronze",
+                run_id=run_id,
+                transformation_python="bronze_ingest_normalized_synthetic",
+                input_rows=customers_df.height + transactions_df.height,
+                output_rows=enriched_customers.height + enriched_transactions.height,
+            )
+            
+            # Write metadata files
+            self._write_bronze_metadata(
+                customers_output_path, enriched_customers, source_table, run_id, partition_key
+            )
+            self._write_bronze_metadata(
+                transactions_output_path, enriched_transactions, source_table, run_id, partition_key
+            )
+            
+            return str(transactions_output_path)
+            
+        except Exception as e:
+            logger.error(f"Normalized synthetic Bronze ingestion failed: {e}")
+            raise
+
+    def read_normalized_bronze_partition(self, partition_key: str) -> tuple[pl.DataFrame, pl.DataFrame]:
+        """
+        Read normalized bronze data (separate customers and transactions) for a given partition.
+        
+        Args:
+            partition_key: Partition key to read
+            
+        Returns:
+            Tuple of (customers_df, transactions_df)
+        """
+        # Read customers
+        customers_dir = self.bronze_base_path / "customers" / partition_key
+        customers_files = list(customers_dir.glob("bronze_customers_*.parquet"))
+        
+        if customers_files:
+            customers_df = pl.read_parquet(customers_files[-1])
+        else:
+            customers_df = pl.DataFrame()
+            logger.warning(f"No customers found in bronze partition {partition_key}")
+        
+        # Read transactions
+        transactions_dir = self.bronze_base_path / "transactions" / partition_key
+        transactions_files = list(transactions_dir.glob("bronze_transactions_*.parquet"))
+        
+        if transactions_files:
+            transactions_df = pl.read_parquet(transactions_files[-1])
+        else:
+            transactions_df = pl.DataFrame()
+            logger.warning(f"No transactions found in bronze partition {partition_key}")
+        
+        return customers_df, transactions_df
+
     def _add_bronze_metadata(
         self,
         df: pl.DataFrame,

@@ -15,17 +15,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import os
+
 import polars as pl
 
-from src.data.anomaly_injector import FinancialAnomalyInjector, InjectorConfig
 from src.data.bronze import BronzeLayer
+from src.data.feature_engineering import CustomerFeatureEngineer
 from src.data.lineage_decorator import emit_transformation_metadata, lineage_trace
 from src.data.pipelines import (
     BronzeToSilverPipeline,
     aml_silver_to_feature_store_inputs,
 )
 from src.data.synthetic_generator import AMLGenerator, AMLGeneratorConfig
-from src.datasets.gold import GoldLayer
+from src.datasets.gold import GoldLayer, silver_to_transaction_features
 
 logger = logging.getLogger(__name__)
 
@@ -164,31 +166,35 @@ def run_bronze_stage(
         seed,
     )
     generator = AMLGenerator(config)
-    synthetic_data = generator.generate()
-    logger.info("Generated %s synthetic records", synthetic_data.height)
-    
+
+    # Use normalized generation to separate customers and transactions.
+    # Anomaly injection happens inside generate_normalized() on the combined
+    # DataFrame so the injector has access to all INJECTABLE_FEATURES (aggregate
+    # columns are stripped after injection).
+    customers_df, transactions_df = generator.generate_normalized(
+        anomaly_ratio=anomaly_ratio,
+        anomaly_seed=seed,
+    )
+    logger.info("Generated %s customers and %s transactions (normalized schema)",
+                customers_df.height, transactions_df.height)
+
     # Export customer metadata for MRM audit trails
     if config.export_customer_metadata:
-        metadata_df = generator.export_customer_metadata(
-            output_path=str(Path(bronze_base_path).parent / "customers_metadata.csv")
-        )
-        logger.info(f"Exported {len(metadata_df)} customer metadata records")
+        customers_df.write_csv(str(Path(bronze_base_path).parent / "customers_metadata.csv"))
+        logger.info(f"Exported {len(customers_df)} customer metadata records")
 
-    injector = FinancialAnomalyInjector(
-        InjectorConfig(anomaly_ratio=anomaly_ratio, seed=seed)
-    )
-    anomalous_data = injector.inject(synthetic_data)
-
-    if anomalous_data.height > 0 and "anomaly_flag" in anomalous_data.columns:
+    # Compute actual anomaly ratio from the labeled transactions
+    if transactions_df.height > 0 and "anomaly_flag" in transactions_df.columns:
         anomaly_ratio_actual = float(
-            anomalous_data["anomaly_flag"].cast(pl.Float64).mean()
+            transactions_df["anomaly_flag"].cast(pl.Float64).mean()
         )
-        logger.info("Anomaly injection complete: ratio=%.4f", anomaly_ratio_actual)
     else:
         anomaly_ratio_actual = 0.0
 
-    bronze_path = bronze_layer.ingest_synthetic_data(
-        anomalous_data,
+    # Ingest both customers and transactions to bronze layer
+    bronze_path = bronze_layer.ingest_normalized_synthetic_data(
+        customers_df=customers_df,
+        transactions_df=transactions_df,
         source_table="synthetic_transactions",
         partition_key=partition_key,
     )
@@ -197,14 +203,14 @@ def run_bronze_stage(
     return BronzeStageResult(
         bronze_path=bronze_path,
         partition_key=partition_key,
-        record_count=anomalous_data.height,
+        record_count=transactions_df.height,
         anomaly_ratio=anomaly_ratio_actual,
     )
 
 
 @lineage_trace(
     job_name="silver_aml_transform",
-    input_datasets=["bronze_transactions"],
+    input_datasets=["bronze_customers", "bronze_transactions"],
     output_datasets=["silver_transactions", "silver_customers", "silver_aml_compliant"],
     namespace="sentinai.silver",
 )
@@ -215,42 +221,49 @@ def run_silver_stage(
     silver_base_path: str | Path = "data/silver",
     config_path: str | Path | None = None,
 ) -> SilverStageResult:
-    """Transform Bronze to Silver using the POCAMLA AML engine."""
+    """Transform Bronze to Silver using the POCAMLA AML engine with normalized schema."""
     partition_key = partition_key or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     config_path = Path(config_path or DEFAULT_REGULATORY_CONFIG)
 
     bronze_layer = BronzeLayer(bronze_base_path=str(bronze_base_path))
-    bronze_df = bronze_layer.read_bronze_partition(partition_key)
-    if bronze_df.is_empty():
+    
+    # Read normalized bronze data (separate customers and transactions)
+    bronze_customers_df, bronze_transactions_df = bronze_layer.read_normalized_bronze_partition(partition_key)
+    
+    if bronze_customers_df.is_empty() and bronze_transactions_df.is_empty():
         raise ValueError(f"No bronze data found for partition {partition_key}")
 
-    logger.info("Read %s records from Bronze partition %s", bronze_df.height, partition_key)
+    logger.info("Read %s customers and %s transactions from Bronze partition %s", 
+                bronze_customers_df.height, bronze_transactions_df.height, partition_key)
 
+    # For now, pass transactions through silver transformation (customers are already normalized)
+    # In future, we may want to apply silver transformations to both
     pipeline = BronzeToSilverPipeline(config_path=config_path)
-    result = pipeline.transform(bronze_df)
+    
+    # Apply silver transformation to transactions only
+    result = pipeline.transform(bronze_transactions_df)
     if not result.validation.passed:
         logger.warning("Silver validation issues: %s", result.validation.errors)
 
     silver_dir = Path(silver_base_path)
     silver_dir.mkdir(parents=True, exist_ok=True)
 
+    # Write customers directly (already in normalized form)
+    customers_path = silver_dir / f"silver_customers_{partition_key}.parquet"
+    bronze_customers_df.write_parquet(customers_path)
+
+    # Write transactions after silver transformation
+    transactions_path = silver_dir / f"silver_transactions_{partition_key}.parquet"
+    result.silver.write_parquet(transactions_path)
+    
+    # Write AML-compliant silver (legacy compatibility)
     aml_silver_path = silver_dir / f"silver_aml_compliant_{partition_key}.parquet"
     result.silver.write_parquet(aml_silver_path)
 
-    transaction_fact_df, customer_dimension_df = aml_silver_to_feature_store_inputs(
-        bronze_df,
-        result.silver,
-    )
-
-    transactions_path = silver_dir / f"silver_transactions_{partition_key}.parquet"
-    customers_path = silver_dir / f"silver_customers_{partition_key}.parquet"
-    transaction_fact_df.write_parquet(transactions_path)
-    customer_dimension_df.write_parquet(customers_path)
-
     logger.info(
-        "Silver transformation complete: %s facts + %s customers (AML silver at %s)",
-        transaction_fact_df.height,
-        customer_dimension_df.height,
+        "Silver transformation complete: %s transactions + %s customers (AML silver at %s)",
+        result.silver.height,
+        bronze_customers_df.height,
         aml_silver_path,
     )
 
@@ -259,8 +272,8 @@ def run_silver_stage(
         customers_path=customers_path,
         aml_silver_path=aml_silver_path,
         partition_key=partition_key,
-        transaction_count=transaction_fact_df.height,
-        customer_count=customer_dimension_df.height,
+        transaction_count=result.silver.height,
+        customer_count=bronze_customers_df.height,
     )
 
 
@@ -274,9 +287,9 @@ def run_gold_stage(
     *,
     partition_key: str | None = None,
     silver_base_path: str | Path = "data/silver",
-    gold_version: str = "v1.0",
+    gold_version: str = "1.0",
 ) -> GoldStageResult:
-    """Materialize Gold feature store from Silver fact and dimension tables."""
+    """Materialize Gold feature store from Silver fact and dimension tables using normalized schema."""
     partition_key = partition_key or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     silver_dir = Path(silver_base_path)
 
@@ -299,11 +312,30 @@ def run_gold_stage(
         anomaly_rate = transactions_df["anomaly_flag"].cast(pl.Float64).mean()
         logger.info("FMS anomaly vectors in Silver stream: rate=%.4f", anomaly_rate)
 
-    gold_layer = GoldLayer(version=gold_version)
-    gold_uri = gold_layer.create_feature_store(
+    # Use new feature engineering pipeline to compute customer features from raw transactions
+    feature_engineer = CustomerFeatureEngineer()
+    customer_features_df = feature_engineer.compute_features(
         transactions_df=transactions_df,
-        customers_df=customers_df,
+        feature_date=datetime.now(timezone.utc)
     )
+    
+    # Create gold output directory
+    gold_dir = Path("data/gold/features") / f"v{gold_version}"
+    gold_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Write customer features
+    customer_features_path = gold_dir / f"customer_features_{partition_key}.parquet"
+    customer_features_df.write_parquet(customer_features_path)
+    logger.info(f"Customer features written to: {customer_features_path}")
+    
+    # Also write the legacy silver_to_transaction_features for backward compatibility
+    features = silver_to_transaction_features(
+        transactions_df,
+        version=gold_version,
+        output_dir="data/gold/features",
+    )
+    
+    gold_uri = os.path.join("data/gold/features", f"v{gold_version}")
     logger.info("Gold feature store created at: %s", gold_uri)
 
     return GoldStageResult(gold_uri=gold_uri, partition_key=partition_key)

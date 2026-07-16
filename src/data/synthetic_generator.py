@@ -34,6 +34,9 @@ from dataclasses import dataclass, field
 from collections import defaultdict, deque
 from enum import Enum
 from pathlib import Path
+from typing import Optional
+
+from src.data.anomaly_injector import FinancialAnomalyInjector, InjectorConfig
 
 logger = logging.getLogger(__name__)
 
@@ -1646,6 +1649,138 @@ class AMLGenerator:
         )
         
         return df
+    
+    def generate_normalized(
+        self,
+        anomaly_ratio: Optional[float] = None,
+        anomaly_seed: Optional[int] = None,
+    ) -> Tuple[pl.DataFrame, pl.DataFrame]:
+        """
+        Generate normalized customer and transaction DataFrames with proper primary/foreign keys.
+
+        Optionally injects anomalies on the combined dataset before splitting,
+        ensuring all INJECTABLE_FEATURES (aggregate columns) are available to
+        the anomaly injector. Aggregate columns are stripped from the returned
+        transaction DataFrame regardless.
+
+        Args:
+            anomaly_ratio: If set, inject anomalies at this ratio (0.0-1.0).
+                Uses FinancialAnomalyInjector with the combined DataFrame.
+            anomaly_seed: RNG seed for anomaly injection (defaults to 42).
+
+        Returns:
+            Tuple of (customers_df, transactions_df) Polars DataFrames
+        """
+        # Generate the combined dataset first
+        logger.info("Generating combined AML dataset …")
+        combined_df = self.generate()
+
+        # --- Anomaly injection on the combined DataFrame ------------------
+        if anomaly_ratio is not None and anomaly_ratio > 0:
+            logger.info(
+                "Injecting anomalies at ratio=%.4f on combined dataset …",
+                anomaly_ratio,
+            )
+            seed = anomaly_seed or 42
+            injector = FinancialAnomalyInjector(
+                InjectorConfig(anomaly_ratio=anomaly_ratio, seed=seed)
+            )
+            combined_df = injector.inject(combined_df)
+            actual_ratio = (
+                combined_df["anomaly_flag"].cast(pl.Float64).mean()
+                if "anomaly_flag" in combined_df.columns
+                else 0.0
+            )
+            logger.info("Anomaly injection complete: actual_ratio=%.4f", actual_ratio)
+        # -----------------------------------------------------------------
+
+        # Extract unique customer records
+        customer_cols = [
+            "customer_id",
+            "customer_name",
+            "email",
+            "tax_id",
+            "kyc_level_encoded",
+            "wallet_tier_encoded",
+            "device_age_days",
+            "sim_match_status",
+            "prev_fraud_flag_count_90d"
+        ]
+        
+        # Add currency if it exists, otherwise add default
+        if "currency" in combined_df.columns:
+            customer_cols.append("currency")
+        
+        # Only select columns that exist
+        available_customer_cols = [col for col in customer_cols if col in combined_df.columns]
+        customers_df = combined_df.select(available_customer_cols).unique(subset=["customer_id"])
+        
+        # Add currency with default value if missing
+        if "currency" not in customers_df.columns:
+            customers_df = customers_df.with_columns([
+                pl.lit("KES").alias("currency")
+            ])
+        
+        # Add registration_date and customer_tier (derived from wallet_tier_encoded)
+        customers_df = customers_df.with_columns([
+            pl.lit(datetime(2024, 1, 1)).alias("registration_date"),
+            pl.col("wallet_tier_encoded").alias("customer_tier")
+        ])
+        
+        # Extract transaction records (remove customer-specific static columns)
+        customer_static_cols = {
+            "customer_name", "email", "tax_id", "currency",
+            "kyc_level_encoded", "wallet_tier_encoded", "device_age_days",
+            "sim_match_status", "prev_fraud_flag_count_90d"
+        }
+        
+        # Also remove aggregate/rolling features (these should be computed in gold layer)
+        aggregate_cols = {
+            "tx_count_1h", "tx_count_24h", "amount_sum_24h", "amount_vs_profile_avg",
+            "time_since_last_tx", "current_balance", "min_balance_30d", "max_balance_30d",
+            "avg_balance_30d", "balance_volatility_30d", "balance_retention_ratio",
+            "zero_balance_frequency", "amount_roundness", "amount_just_below_threshold",
+            "similar_amount_count_24h", "identical_amount_count_24h", "structuring_amount_entropy",
+            "pass_through_ratio", "degree_centrality", "in_degree", "out_degree",
+            "funnel_score", "reciprocity_ratio", "burst_ratio", "velocity_change_pct",
+            "balance_depletion_rate", "device_changes_7d", "location_entropy",
+            "rolling_avg_tx_amount_30d", "rolling_net_flow_7d", "new_relationships_7d",
+            "community_id", "behavioral_shift_score"
+        }
+        
+        # Keep only core transaction columns
+        transaction_cols = [col for col in combined_df.columns 
+                          if col not in customer_static_cols and col not in aggregate_cols]
+        
+        transactions_df = combined_df.select(transaction_cols)
+        
+        # Ensure transaction_type column exists (derive from existing columns if needed)
+        if "transaction_type" not in transactions_df.columns:
+            # Derive transaction_type from amount patterns or use default
+            transactions_df = transactions_df.with_columns([
+                pl.lit("Send Money").alias("transaction_type")
+            ])
+        
+        # Ensure required columns exist
+        required_cols = ["transaction_id", "counterparty_id"]
+        for col in required_cols:
+            if col not in transactions_df.columns:
+                if col == "transaction_id":
+                    transactions_df = transactions_df.with_columns([
+                        pl.concat_str(["TXN_", pl.col("customer_id").rank().cast(pl.String)])
+                        .alias("transaction_id")
+                    ])
+                elif col == "counterparty_id":
+                    transactions_df = transactions_df.with_columns([
+                        pl.lit("COUNTERPARTY_").alias("counterparty_id")
+                    ])
+        
+        logger.info(
+            f"Generated normalized schema: {len(customers_df)} customers, "
+            f"{len(transactions_df)} transactions"
+        )
+        
+        return customers_df, transactions_df
     
     def generate_summary_statistics(self, df: pl.DataFrame) -> Dict[str, Any]:
         """

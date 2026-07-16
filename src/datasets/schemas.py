@@ -2,6 +2,125 @@ import pandera.polars as pa
 import polars as pl
 from pandera.typing.polars import DataFrame, Series
 from typing import Annotated
+from datetime import datetime
+
+
+class CustomerSchema(pa.DataFrameModel):
+    """
+    Customer dimension table - customer_id as primary key.
+    
+    Contains static customer profile information that doesn't change per transaction.
+    This table serves as the customer master record with customer_id as the unique identifier.
+    """
+    customer_id: str = pa.Field(nullable=False)
+    customer_name: str = pa.Field(nullable=False)
+    email: str = pa.Field(nullable=False)
+    tax_id: str = pa.Field(nullable=False)
+    currency: str = pa.Field(nullable=False)
+    kyc_level_encoded: int = pa.Field(nullable=False, ge=1, le=4)
+    wallet_tier_encoded: int = pa.Field(nullable=False, ge=1, le=3)
+    device_age_days: int = pa.Field(nullable=False, ge=0)
+    sim_match_status: bool = pa.Field(nullable=False)
+    prev_fraud_flag_count_90d: int = pa.Field(nullable=False, ge=0)
+    registration_date: pl.Datetime("us", "UTC") = pa.Field(nullable=False)
+    customer_tier: int = pa.Field(nullable=False, ge=1, le=4)
+    
+    class Config:
+        strict = True
+        coerce = True
+
+
+class TransactionSchema(pa.DataFrameModel):
+    """
+    Transaction fact table - transaction_id as primary key, customer_id as foreign key.
+    
+    Contains raw transaction events. Each row represents a single transaction.
+    customer_id links to CustomerSchema.customer_id (foreign key relationship).
+    """
+    transaction_id: str = pa.Field(nullable=False)
+    customer_id: str = pa.Field(nullable=False)
+    counterparty_id: str = pa.Field(nullable=False)
+    amount: float = pa.Field(nullable=False, ge=0)
+    timestamp: pl.Datetime("us", "UTC") = pa.Field(nullable=False)
+    receiver_id: str = pa.Field(nullable=False)
+    sender_county: str = pa.Field(nullable=False)
+    receiver_county: str = pa.Field(nullable=False)
+    transaction_type: str = pa.Field(nullable=False)
+    anomaly_flag: bool = pa.Field(nullable=False)
+    anomaly_type: str = pa.Field(nullable=True)
+    anomaly_case_id: str = pa.Field(nullable=True)
+    
+    class Config:
+        strict = True
+        coerce = True
+
+
+class CustomerFeaturesSchema(pa.DataFrameModel):
+    """
+    Customer features table - composite key (customer_id, feature_date), customer_id as foreign key.
+    
+    Contains time-varying customer-level features computed from transactions.
+    These are aggregate/rolling features computed in the gold/feature layer.
+    customer_id links to CustomerSchema.customer_id (foreign key relationship).
+    """
+    customer_id: str = pa.Field(nullable=False)
+    feature_date: pl.Datetime("us", "UTC") = pa.Field(nullable=False)
+    
+    # Real-time velocity features
+    tx_count_1h: int = pa.Field(nullable=True, ge=0)
+    tx_count_24h: int = pa.Field(nullable=True, ge=0)
+    amount_sum_24h: float = pa.Field(nullable=True, ge=0)
+    amount_vs_profile_avg: float = pa.Field(nullable=True)
+    time_since_last_tx: float = pa.Field(nullable=True, ge=0)
+    
+    # Balance pattern features
+    current_balance: float = pa.Field(nullable=True)
+    min_balance_30d: float = pa.Field(nullable=True)
+    max_balance_30d: float = pa.Field(nullable=True)
+    avg_balance_30d: float = pa.Field(nullable=True)
+    balance_volatility_30d: float = pa.Field(nullable=True, ge=0)
+    balance_retention_ratio: float = pa.Field(nullable=True, ge=0, le=1)
+    zero_balance_frequency: int = pa.Field(nullable=True, ge=0)
+    
+    # Amount pattern features
+    amount_roundness: float = pa.Field(nullable=True)
+    amount_just_below_threshold: bool = pa.Field(nullable=True)
+    similar_amount_count_24h: int = pa.Field(nullable=True, ge=0)
+    identical_amount_count_24h: int = pa.Field(nullable=True, ge=0)
+    structuring_amount_entropy: float = pa.Field(nullable=True)
+    
+    # Network features
+    pass_through_ratio: float = pa.Field(nullable=True, ge=0, le=1)
+    degree_centrality: float = pa.Field(nullable=True, ge=0, le=1)
+    in_degree: int = pa.Field(nullable=True, ge=0)
+    out_degree: int = pa.Field(nullable=True, ge=0)
+    funnel_score: float = pa.Field(nullable=True)
+    reciprocity_ratio: float = pa.Field(nullable=True, ge=0, le=1)
+    
+    # Temporal anomaly features
+    burst_ratio: float = pa.Field(nullable=True)
+    velocity_change_pct: float = pa.Field(nullable=True)
+    balance_depletion_rate: float = pa.Field(nullable=True)
+    is_anomalous_hour: bool = pa.Field(nullable=True)
+    
+    # Device/location features
+    device_changes_7d: int = pa.Field(nullable=True, ge=0)
+    device_change_flag: bool = pa.Field(nullable=True)
+    location_entropy: float = pa.Field(nullable=True)
+    
+    # Rolling window features
+    rolling_avg_tx_amount_30d: float = pa.Field(nullable=True)
+    rolling_net_flow_7d: float = pa.Field(nullable=True)
+    new_relationships_7d: int = pa.Field(nullable=True, ge=0)
+    
+    # Advanced analytics features
+    community_id: float = pa.Field(nullable=True)
+    behavioral_shift_score: float = pa.Field(nullable=True)
+    
+    class Config:
+        strict = False  # allow other columns to pass through
+        coerce = True
+
 
 class SilverRecordSchema(pa.DataFrameModel):
     """
