@@ -683,6 +683,30 @@ def _null_fill_literals() -> dict[str, Any]:
     }
 
 
+def derive_temporal_features(df: pl.DataFrame) -> pl.DataFrame:
+    """Derive temporal features from timestamp column for Silver layer.
+    
+    Args:
+        df: DataFrame with timestamp column
+        
+    Returns:
+        DataFrame with added temporal columns: hour, day_of_week, month, is_weekend, is_night
+    """
+    # Ensure timestamp is datetime type
+    if df.schema.get("timestamp") in (pl.String, pl.Utf8):
+        df = df.with_columns(
+            pl.col("timestamp").str.to_datetime(time_zone="UTC", strict=False).alias("timestamp")
+        )
+    
+    return df.with_columns([
+        pl.col("timestamp").dt.hour().alias("hour"),
+        pl.col("timestamp").dt.weekday().alias("day_of_week"),
+        pl.col("timestamp").dt.month().alias("month"),
+        (pl.col("timestamp").dt.weekday() >= 5).alias("is_weekend"),
+        ((pl.col("timestamp").dt.hour() < 6) | (pl.col("timestamp").dt.hour() >= 22)).alias("is_night"),
+    ])
+
+
 def bronze_to_silver(
     bronze_df: pl.DataFrame,
     config_path: str | Path = "config/regulatory.yaml",

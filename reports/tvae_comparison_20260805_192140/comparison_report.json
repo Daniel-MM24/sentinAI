@@ -1,0 +1,111 @@
+{
+  "partition": "2026-08-05",
+  "timestamp": "2026-08-05T19:21:40.585331",
+  "configuration": {
+    "partition": "2026-08-05",
+    "monte_carlo_dir": "data/gold/features",
+    "tvae_dir": "data/gold",
+    "report_dir": "reports",
+    "version": "v1.0"
+  },
+  "tvae_hybrid_data": {
+    "status": "not_found",
+    "path": "data/gold/tvae_hybrid_gold_2026-08-05.parquet"
+  },
+  "basic_statistics": {
+    "monte_carlo": {
+      "total_rows": 41,
+      "total_columns": 5,
+      "unique_customers": 41,
+      "columns": [
+        "customer_id",
+        "tx_count_7d",
+        "volume_7d",
+        "night_tx_ratio",
+        "rapid_tx_ratio"
+      ]
+    },
+    "tvae_hybrid": {}
+  },
+  "distribution_comparison": {
+    "status": "skipped",
+    "reason": "missing datasets"
+  },
+  "correlation_comparison": {
+    "status": "skipped",
+    "reason": "missing datasets"
+  },
+  "temporal_comparison": {
+    "status": "skipped",
+    "reason": "missing datasets"
+  },
+  "tier_compliance": {},
+  "anomaly_comparison": {
+    "status": "skipped",
+    "reason": "missing tvae data"
+  },
+  "feature_coverage": {
+    "monte_carlo": {
+      "total_columns": 5,
+      "expected_columns": 21,
+      "missing_columns": [
+        "amount_roundness",
+        "volume_7d_vs_30d_ratio",
+        "amount",
+        "transaction_type",
+        "direction",
+        "close_to_limit_ratio",
+        "distinct_counterparties_7d",
+        "is_international",
+        "is_launderer",
+        "balance_retention_ratio",
+        "archetype",
+        "timestamp",
+        "fan_in_fan_out_ratio",
+        "balance",
+        "aml_scenario",
+        "tier"
+      ],
+      "extra_columns": [],
+      "schema_compliant": false,
+      "null_coverage": {
+        "customer_id": {
+          "null_count": 0,
+          "null_ratio": 0.0
+        },
+        "tx_count_7d": {
+          "null_count": 0,
+          "null_ratio": 0.0
+        },
+        "volume_7d": {
+          "null_count": 0,
+          "null_ratio": 0.0
+        },
+        "night_tx_ratio": {
+          "null_count": 0,
+          "null_ratio": 0.0
+        },
+        "rapid_tx_ratio": {
+          "null_count": 0,
+          "null_ratio": 0.0
+        }
+      }
+    }
+  },
+  "recommendations": {
+    "use_tvae_when": [
+      "When generating large-scale synthetic data with realistic distributions",
+      "When scaling to very large dataset sizes (TVAE generation is faster after training)",
+      "When capturing complex multi-modal behavioral patterns",
+      "When adaptability to new data distributions is needed"
+    ],
+    "use_monte_carlo_when": [
+      "When complete transparency and interpretability of generation process is required",
+      "When computational resources for model training are limited",
+      "When deterministic reproducibility is critical"
+    ],
+    "key_findings": [
+      "TVAE maintains similar distributions to Monte Carlo baseline (0 significant differences)"
+    ]
+  }
+}

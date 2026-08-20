@@ -89,23 +89,45 @@ class GoldFeatureRecord(BaseModel):
     """
     Pydantic model for Gold layer feature records.
 
-    This represents feature-rich, denormalized data for AI consumption
-    with high-performance aggregations and engineered features.
+    TVAE Hybrid v2.0 - 21-feature schema optimized for tree-based AML models.
+    
+    Core Features (8): customer_id, tier, archetype, transaction_type, amount, timestamp, direction, balance
+    Temporal Features (5): tx_count_7d, volume_7d, night_tx_ratio, rapid_tx_ratio, volume_7d_vs_30d_ratio
+    Network Features (3): is_international, distinct_counterparties_7d, fan_in_fan_out_ratio
+    Structuring Features (3): close_to_limit_ratio, balance_retention_ratio, amount_roundness
+    Labels (2): is_launderer, aml_scenario
     """
     customer_id: str = Field(..., description="Customer identifier (required)")
+    tier: Optional[int] = Field(None, description="Customer tier (1-4)")
+    archetype: Optional[str] = Field(None, description="Customer archetype")
+    transaction_type: Optional[str] = Field(None, description="Transaction type")
     amount: float = Field(..., ge=0, description="Transaction amount")
     timestamp: datetime = Field(..., description="Transaction timestamp")
+    direction: Optional[str] = Field(None, description="Transaction direction")
+    balance: Optional[float] = Field(None, description="Account balance")
+    
+    # Temporal Features (5)
+    tx_count_7d: Optional[int] = Field(None, ge=0, description="Transaction count in 7 days")
+    volume_7d: Optional[float] = Field(None, ge=0, description="Transaction volume in 7 days")
+    night_tx_ratio: Optional[float] = Field(None, ge=0, le=1, description="Night transaction ratio")
+    rapid_tx_ratio: Optional[float] = Field(None, ge=0, le=1, description="Rapid transaction ratio")
+    volume_7d_vs_30d_ratio: Optional[float] = Field(None, description="7d vs 30d volume ratio")
+    
+    # Network Features (3)
+    is_international: Optional[bool] = Field(None, description="International transaction flag")
+    distinct_counterparties_7d: Optional[int] = Field(None, ge=0, description="Distinct counterparties in 7 days")
+    fan_in_fan_out_ratio: Optional[float] = Field(None, ge=0, description="Fan-in/fan-out ratio")
+    
+    # Structuring Features (3)
+    close_to_limit_ratio: Optional[float] = Field(None, ge=0, le=1, description="Close to limit ratio")
+    balance_retention_ratio: Optional[float] = Field(None, ge=0, le=1, description="Balance retention ratio")
+    amount_roundness: Optional[float] = Field(None, ge=0, le=1, description="Amount roundness score")
+    
+    # Labels (2)
+    is_launderer: Optional[bool] = Field(None, description="Money launderer label")
+    aml_scenario: Optional[str] = Field(None, description="AML scenario type")
+    
     partition_date: str = Field(..., description="Date partition for storage")
-
-    # Feature Engineering Outputs
-    day_of_month: int = Field(..., ge=1, le=31, description="Day of month (1-31)")
-    day_of_week: int = Field(..., ge=0, le=6, description="Day of week (0-6)")
-    hour_of_day: int = Field(..., ge=0, le=23, description="Hour of day (0-23)")
-    transaction_velocity: float = Field(..., ge=0, description="Transaction velocity metric")
-    clv: float = Field(..., ge=0, description="Customer lifetime value")
-    mean_transaction_amount: float = Field(..., ge=0, description="Mean transaction amount")
-    high_risk_amount: int = Field(..., ge=0, description="High risk amount flag")
-    z_score_deviation: float = Field(..., description="Z-score deviation from mean")
     synthetic_flag: bool = Field(default=False, description="Flag indicating synthetic data")
 
     class Config:

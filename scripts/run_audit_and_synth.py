@@ -36,6 +36,23 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Delete existing data directories before running",
     )
+    parser.add_argument(
+        "--use-tvae-hybrid",
+        action="store_true",
+        help="Use TVAE hybrid generation instead of pure Monte Carlo",
+    )
+    parser.add_argument(
+        "--tvae-samples",
+        type=int,
+        default=50000,
+        help="Number of TVAE samples to generate (default: 50000)",
+    )
+    parser.add_argument(
+        "--tvae-anomaly-ratio",
+        type=float,
+        default=0.015,
+        help="Anomaly ratio for TVAE hybrid generation (default: 0.015)",
+    )
     return parser.parse_args()
 
 
@@ -60,15 +77,25 @@ def main() -> None:
         result = run_medallion_orchestrator(
             fast_mode=fast_mode,
             force_refresh=args.force_refresh,
+            use_tvae_hybrid=args.use_tvae_hybrid,
+            n_samples=args.tvae_samples,
+            anomaly_ratio=args.tvae_anomaly_ratio,
         )
     except Exception:
         logger.exception("Medallion pipeline failed")
         sys.exit(1)
 
     logger.info("Pipeline completed successfully")
-    logger.info("Bronze records: %s", result["bronze"].record_count)
-    logger.info("Silver transactions: %s", result["silver"].transaction_count)
-    logger.info("Gold feature store: %s", result["gold"].gold_uri)
+    
+    if args.use_tvae_hybrid:
+        logger.info("Generation method: TVAE Hybrid")
+        logger.info("Gold records: %s", result["tvae_hybrid"].record_count)
+        logger.info("Gold path: %s", result["tvae_hybrid"].gold_path)
+    else:
+        logger.info("Generation method: Monte Carlo")
+        logger.info("Bronze records: %s", result["bronze"].record_count)
+        logger.info("Silver transactions: %s", result["silver"].transaction_count)
+        logger.info("Gold feature store: %s", result["gold"].gold_uri)
 
     # Export detailed_transactions.csv for the EDA notebook
     try:

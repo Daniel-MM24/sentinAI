@@ -618,30 +618,16 @@ class BehavioralTransactionGenerator:
             # Generate next timestamp using thinning
             current_timestamp = self._generate_timestamp(current_timestamp)
 
-            paid_in = plan["amount"] if plan["direction"] == FlowDirection.INFLOW else 0.0
-            paid_out = plan["amount"] if plan["direction"] == FlowDirection.OUTFLOW else 0.0
-
             transactions.append(
                 {
-                    "transaction_id": f"TXN_{generated:010d}",
                     "customer_id": customer_id,
-                    "counterparty": plan["counterparty"],
                     "transaction_type": plan["tx_type"].value,
                     "amount": plan["amount"],
-                    "direction": plan["direction"].value,
                     "timestamp": current_timestamp.isoformat(),
-                    "paid_in": paid_in,
-                    "paid_out": paid_out,
+                    "direction": plan["direction"].value,
                     "balance": customer.balance,
                     "tier": customer.tier,
-                    "hour": current_timestamp.hour,
-                    "day_of_week": current_timestamp.weekday(),
-                    "month": current_timestamp.month,
-                    "is_weekend": current_timestamp.weekday() >= 5,
-                    "is_night": current_timestamp.hour < 6 or current_timestamp.hour >= 22,
-                    "is_betting": plan["is_betting"],
                     "is_international": plan["is_international"],
-                    "is_kadogo": plan["is_kadogo"],
                 }
             )
             generated += 1
@@ -656,8 +642,6 @@ class BehavioralTransactionGenerator:
             )
 
         df = pl.DataFrame(transactions).sort("timestamp")
-        # Add balance_after alias for downstream exporter compatibility
-        df = df.with_columns(pl.col("balance").alias("balance_after"))
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
         df.write_csv(output)
@@ -681,12 +665,9 @@ class BehavioralTransactionGenerator:
         for tx_type, count in df.group_by("transaction_type").len().sort("transaction_type").iter_rows():
             logger.info("    %s: %s (%.1f%%)", tx_type, count, count / total * 100)
 
-        betting_count = df.filter(pl.col("is_betting")).height
         intl_count = df.filter(pl.col("is_international")).height
         logger.info("  High-risk flags:")
-        logger.info("    Betting transactions: %s (%.1f%%)", betting_count, betting_count / total * 100)
         logger.info("    International transactions: %s (%.1f%%)", intl_count, intl_count / total * 100)
-        logger.info("  Kadogo transactions: %s", df.filter(pl.col("is_kadogo")).height)
         logger.info(
             "  Amount stats — mean: %.2f, median: %.2f, min: %.2f, max: %.2f",
             df["amount"].mean(),
@@ -694,12 +675,6 @@ class BehavioralTransactionGenerator:
             df["amount"].min(),
             df["amount"].max(),
         )
-        logger.info("  Temporal distribution:")
-        logger.info("    Weekend: %.1f%%", df.filter(pl.col("is_weekend")).height / total * 100)
-        logger.info("    Night: %.1f%%", df.filter(pl.col("is_night")).height / total * 100)
-        logger.info("    Hour distribution:")
-        for hour, count in df.group_by("hour").len().sort("hour").iter_rows():
-            logger.info("      h%02d: %s (%.1f%%)", hour, count, count / total * 100)
 
     def _log_balance_stats(self, df: pl.DataFrame) -> None:
         """Log balance integrity and tracking statistics."""
@@ -730,7 +705,10 @@ class BehavioralTransactionGenerator:
             prev_balance = state.opening_balance
             ledger_match = True
             for row in cdf.iter_rows(named=True):
-                expected = prev_balance + row["paid_in"] - row["paid_out"]
+                # Derive paid_in/paid_out from amount and direction
+                paid_in = row["amount"] if row["direction"] == "inflow" else 0.0
+                paid_out = row["amount"] if row["direction"] == "outflow" else 0.0
+                expected = prev_balance + paid_in - paid_out
                 if abs(expected - row["balance"]) > 1.0:
                     ledger_match = False
                     break

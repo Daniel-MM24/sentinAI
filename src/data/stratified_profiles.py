@@ -40,13 +40,9 @@ class KYCTier(str, Enum):
 
 @dataclass
 class CustomerProfile:
-    """Complete customer profile with tier, risk, and archetype data."""
+    """Essential customer profile with tier and archetype data."""
     customer_id: str
     kyc_tier: KYCTier
-    max_transaction_limit: float  # KES
-    max_balance_limit: float  # KES
-    account_age_days: int
-    initial_balance: float
     archetype: CustomerArchetype
 
 
@@ -88,15 +84,15 @@ class StratifiedProfileGenerator:
             f"seed={self.config.seed}"
         )
     
-    def _assign_kyc_tier(self, n: int) -> Tuple[List[KYCTier], List[float], List[float]]:
+    def _assign_kyc_tier(self, n: int) -> List[KYCTier]:
         """
-        Assign KYC tiers with regulatory limits.
+        Assign KYC tiers.
         
         Args:
             n: Number of customers to assign tiers to
             
         Returns:
-            Tuple of (kyc_tiers, max_transaction_limits, max_balance_limits)
+            List of KYC tiers
         """
         tier_probs = [
             self.config.tier_1_pct,
@@ -119,54 +115,8 @@ class StratifiedProfileGenerator:
             for idx in tier_indices
         ]
 
-        # Assign limits based on tier index (CBK PG/43 guidelines)
-        tx_limits = [
-            10_000.0 if idx == 0 else
-            50_000.0 if idx == 1 else
-            150_000.0 if idx == 2 else
-            500_000.0  # TIER_4 (EDD)
-            for idx in tier_indices
-        ]
+        return kyc_tiers
 
-        balance_limits = [
-            50_000.0 if idx == 0 else
-            200_000.0 if idx == 1 else
-            1_000_000.0 if idx == 2 else
-            5_000_000.0  # TIER_4 (EDD)
-            for idx in tier_indices
-        ]
-
-        return kyc_tiers, tx_limits, balance_limits
-
-    def _generate_account_age(self, n: int) -> List[int]:
-        """
-        Generate account age in days (30 to 365 days).
-        
-        Args:
-            n: Number of samples to generate
-            
-        Returns:
-            List of account age values
-        """
-        return [int(self._rng.integers(30, 366)) for _ in range(n)]
-    
-    def _generate_initial_balance(self, n: int, balance_limits: List[float]) -> List[float]:
-        """
-        Generate initial balance within tier limits.
-        
-        Args:
-            n: Number of samples to generate
-            balance_limits: List of maximum balance limits per customer
-            
-        Returns:
-            List of initial balance values
-        """
-        # Generate balances as percentage of limit (log-normal distribution)
-        balance_pct = self._rng.lognormal(mean=-1.0, sigma=0.5, size=n)
-        balance_pct = np.clip(balance_pct, 0.01, 0.95)  # 1% to 95% of limit
-        
-        initial_balances = [float(balance_pct[i] * balance_limits[i]) for i in range(n)]
-        return initial_balances
     
     def generate_profiles(self) -> List[CustomerProfile]:
         """
@@ -179,12 +129,8 @@ class StratifiedProfileGenerator:
         
         n = self.config.num_customers
 
-        # Assign KYC tiers with limits
-        kyc_tiers, tx_limits, balance_limits = self._assign_kyc_tier(n)
-
-        # Generate account attributes
-        account_ages = self._generate_account_age(n)
-        initial_balances = self._generate_initial_balance(n, balance_limits)
+        # Assign KYC tiers
+        kyc_tiers = self._assign_kyc_tier(n)
         
         # Assign archetypes based on MRM downscaling parameters
         archetype_enum_list = list(CustomerArchetype)
@@ -199,10 +145,6 @@ class StratifiedProfileGenerator:
             profile = CustomerProfile(
                 customer_id=f"CUST_{i:06d}",
                 kyc_tier=kyc_tiers[i],
-                max_transaction_limit=tx_limits[i],
-                max_balance_limit=balance_limits[i],
-                account_age_days=account_ages[i],
-                initial_balance=initial_balances[i],
                 archetype=archetypes[i]
             )
             profiles.append(profile)
@@ -233,12 +175,8 @@ class StratifiedProfileGenerator:
         """
         data = {
             "customer_id": [p.customer_id for p in profiles],
-            "kyc_tier": [p.kyc_tier.value if isinstance(p.kyc_tier, KYCTier) else str(p.kyc_tier) for p in profiles],
-            "max_transaction_limit_kes": [p.max_transaction_limit for p in profiles],
-            "max_balance_limit_kes": [p.max_balance_limit for p in profiles],
-            "account_age_days": [p.account_age_days for p in profiles],
-            "initial_balance_kes": [p.initial_balance for p in profiles],
-            "archetype": [p.archetype.value if isinstance(p.archetype, CustomerArchetype) else str(p.archetype) for p in profiles],
+            "tier": [p.kyc_tier.value for p in profiles],
+            "archetype": [p.archetype.value for p in profiles],
         }
 
         df = pl.DataFrame(data)
@@ -246,11 +184,7 @@ class StratifiedProfileGenerator:
         # Set proper data types
         schema = {
             "customer_id": pl.String,
-            "kyc_tier": pl.String,
-            "max_transaction_limit_kes": pl.Float64,
-            "max_balance_limit_kes": pl.Float64,
-            "account_age_days": pl.Int32,
-            "initial_balance_kes": pl.Float64,
+            "tier": pl.String,
             "archetype": pl.String,
         }
         
@@ -297,11 +231,11 @@ def main():
     print(df.head())
     
     print(f"\n=== Distribution Summary ===")
-    print(f"\nKYC tier distribution:\n{df['kyc_tier'].value_counts()}")
+    print(f"\nKYC tier distribution:\n{df['tier'].value_counts()}")
     print(f"\nArchetype distribution:\n{df['archetype'].value_counts()}")
     
     # Save to CSV
-    output_path = Path("/home/dan/project/sentinAI/data/bronze/customers/customer_profiles_complete.csv")
+    output_path = Path("/home/dan/project/sentinAI/data/bronze/customers/customer_profiles.csv")
     generator.save_to_csv(df, output_path)
     print(f"\nSaved to {output_path}")
 

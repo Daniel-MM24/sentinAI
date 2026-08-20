@@ -38,7 +38,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 TRANSACTION_PATH = PROJECT_ROOT / "data" / "detailed_transactions.csv"
 OUTPUT_PATH = PROJECT_ROOT / "data" / "aml_ground_truth.csv"
 CUSTOMER_PROFILES_PATH = (
-    PROJECT_ROOT / "data" / "bronze" / "customers" / "customer_profiles_complete.csv"
+    PROJECT_ROOT / "data" / "bronze" / "customers" / "customer_profiles.csv"
 )
 
 # CBK / regulatory thresholds
@@ -125,6 +125,7 @@ class AMLScenarioInjector:
         self.config = config or ScenarioInjectorConfig()
         self._rng = np.random.default_rng(self.config.seed)
         self._launderer_map: dict[str, str] = {}  # customer_id -> scenario
+        self._merged_transactions: Optional[pl.DataFrame] = None  # merged clean + injected
 
     # ------------------------------------------------------------------
     # Phase 1: selection
@@ -430,18 +431,16 @@ class AMLScenarioInjector:
         direction: str,
         timestamp: datetime,
     ) -> dict[str, Any]:
-        """Build a single transaction row dict matching the CSV schema."""
-        paid_in = amount if direction == "inflow" else 0.0
-        paid_out = amount if direction == "outflow" else 0.0
+        """Build a single transaction row dict matching the streamlined schema."""
         return {
             "customer_id": customer_id,
-            "counterparty": counterparty,
             "transaction_type": transaction_type,
             "amount": amount,
-            "direction": direction,
             "timestamp": timestamp,
-            "paid_in": paid_in,
-            "paid_out": paid_out,
+            "direction": direction,
+            "balance": 0.0,  # Placeholder - will be computed during merge
+            "tier": 1,  # Placeholder - will be joined from customer profiles
+            "is_international": False,  # Default for injected AML patterns
         }
 
     # ------------------------------------------------------------------
@@ -498,6 +497,52 @@ class AMLScenarioInjector:
             )
             injected_txs.append(new_txs)
 
+        # --- Merge injected transactions with clean data ---
+        if injected_txs:
+            all_injected = pl.concat(injected_txs)
+            # Merge clean and injected transactions
+            merged_df = pl.concat([transactions_df, all_injected])
+            
+            # Load customer profiles for tier information
+            customer_profiles = pl.read_csv(CUSTOMER_PROFILES_PATH)
+            # Extract tier number from tier string (e.g., "tier_2" -> 2)
+            customer_profiles = customer_profiles.with_columns(
+                pl.col("tier").str.extract(r"tier_(\d+)").cast(pl.Int32).alias("tier_num")
+            )
+            
+            # Recalculate running balance for each customer chronologically
+            # Calculate net change per transaction
+            merged_df = merged_df.with_columns(
+                pl.when(pl.col("direction") == "inflow")
+                .then(pl.col("amount"))
+                .otherwise(-pl.col("amount"))
+                .alias("net_change")
+            )
+            
+            # Sort by customer_id and timestamp for running balance calculation
+            merged_df = merged_df.sort(["customer_id", "timestamp"])
+            
+            # Calculate running balance per customer
+            merged_df = merged_df.with_columns(
+                pl.col("net_change").cum_sum().over("customer_id").alias("balance")
+            )
+            
+            # Join tier information from customer profiles
+            merged_df = merged_df.join(
+                customer_profiles.select(["customer_id", "tier_num"]),
+                on="customer_id",
+                how="left"
+            ).rename({"tier_num": "tier"})
+            
+            # Drop the temporary net_change column
+            merged_df = merged_df.drop("net_change")
+            
+            # Store merged transactions for later access
+            self._merged_transactions = merged_df
+            
+            logger.info("Merged %d injected transactions with clean data", len(all_injected))
+            logger.info("Recalculated balance and joined tier for %d total transactions", len(merged_df))
+
         # --- build ground-truth records ---
         records: list[dict[str, Any]] = []
         for cid in customer_ids:
@@ -538,6 +583,10 @@ class AMLScenarioInjector:
     def get_launderer_map(self) -> dict[str, str]:
         """Return the customer_id -> scenario mapping for inspection."""
         return dict(self._launderer_map)
+
+    def get_merged_transactions(self) -> Optional[pl.DataFrame]:
+        """Return the merged transaction DataFrame (clean + injected) with recalculated balance and tier."""
+        return self._merged_transactions
 
     def generate_summary(self, gt_df: pl.DataFrame) -> dict[str, Any]:
         """Generate summary statistics for the ground-truth dataset."""

@@ -1,15 +1,17 @@
 """
-Stateful Synthetic Generator for AML Transaction Simulation.
+Stateful Synthetic Generator for AML Transaction Simulation (TVAE Hybrid v2.0).
 
 This module implements a comprehensive stateful customer data and transactional
 simulation engine that generates synthetic cohorts of customers and tracks their
 complete account lifecycles day-by-day—simulating real-time incoming and outgoing
 transactions while maintaining rolling balance states that mimic an M-Pesa account.
 
-The generator produces AML-focused features including:
-- Tier 1: Real-time velocity, balance, amount pattern, and network features
-- Tier 2: Temporal anomalies, behavioral shifts, device/location intelligence
-- Tier 3: Advanced analytics (community detection, layering indicators)
+TVAE Hybrid Implementation (v2.0) - 21-feature schema:
+- Core Features (8): customer_id, tier, archetype, transaction_type, amount, timestamp, direction, balance
+- Temporal Features (5): tx_count_7d, volume_7d, night_tx_ratio, rapid_tx_ratio, volume_7d_vs_30d_ratio
+- Network Features (3): is_international, distinct_counterparties_7d, fan_in_fan_out_ratio
+- Structuring Features (3): close_to_limit_ratio, balance_retention_ratio, amount_roundness
+- Labels (2): is_launderer, aml_scenario
 
 CRITICAL: This module maintains mathematical balance integrity and generates
 stateful transaction histories with rolling window feature computation.
@@ -563,15 +565,13 @@ class AMLGenerator:
     complete account lifecycles day-by-day—simulating real-time incoming and outgoing
     transactions while maintaining rolling balance states that mimic an M-Pesa account.
     
-    Features computed:
-    - Tier 1: tx_count_1h, tx_count_24h, amount_sum_24h, amount_vs_profile_avg,
-              time_since_last_tx, avg_balance_30d, balance_volatility_30d,
-              pass_through_ratio, degree_centrality, funnel_score, structuring_amount_entropy
-    - Tier 2: burst_ratio, similar_amount_count_24h, balance_depletion_rate,
-              hour_of_day, device_changes_7d, location_entropy, rolling_avg_tx_amount_30d,
-              rolling_net_flow_7d, new_relationships_7d, smurfing_chain_score, layering_velocity
-    - Tier 3: amount_roundness, community_id, betweenness_centrality,
-              behavioral_shift_score, agent_splitting_score, international_tx_ratio
+    TVAE Hybrid v2.0 - Core features generated (9 columns):
+    - customer_id, tier, archetype, transaction_type, amount, timestamp, direction, balance, counterparty
+    - Additional 10 features computed by CustomerFeatureEngineer:
+      tx_count_7d, volume_7d, night_tx_ratio, rapid_tx_ratio, volume_7d_vs_30d_ratio,
+      distinct_counterparties_7d, fan_in_fan_out_ratio, close_to_limit_ratio,
+      balance_retention_ratio, amount_roundness
+    - Labels: is_launderer, aml_scenario
     """
     
     def __init__(self, config: Optional[AMLGeneratorConfig] = None):
@@ -829,72 +829,41 @@ class AMLGenerator:
             velocity_features[f'tx_count_{window}'] = len(window_txs)
             velocity_features[f'amount_sum_{window}'] = sum(tx['amount'] for tx in window_txs)
         
-        # Compute derived velocity features
-        tx_count_1h = velocity_features['tx_count_1h']
-        tx_count_24h = velocity_features['tx_count_24h']
-        amount_sum_1h = velocity_features['amount_sum_1h']
-        amount_sum_24h = velocity_features['amount_sum_24h']
-        
-        # Burst ratio: Max 1h volume / avg 1h volume (simplified as current/expected)
-        expected_hourly_tx = profile.transaction_frequency / 24.0
-        velocity_features['burst_ratio'] = tx_count_1h / (expected_hourly_tx + 1e-6)
-        
-        # Velocity change: Current 24h / 30d average
-        tx_count_30d = velocity_features['tx_count_30d']
-        if tx_count_30d > 0:
-            velocity_features['velocity_change_pct'] = tx_count_24h / (tx_count_30d / 30.0 + 1e-6)
-        else:
-            velocity_features['velocity_change_pct'] = 0.0
+        # TVAE Hybrid v2.0 - No legacy velocity features computed here
+        # These are now computed by CustomerFeatureEngineer
         
         return velocity_features
     
-    def _get_balance_features(
+    def _compute_balance_features(
         self, 
         customer_id: str, 
         current_time: datetime
     ) -> Dict[str, float]:
         """
-        Compute balance-related features for a customer.
+        Compute balance-based features for 21-feature schema.
         
         Args:
             customer_id: Customer identifier
             current_time: Current transaction timestamp
             
         Returns:
-            Dictionary of balance features
+            Dictionary of balance features (only balance_retention_ratio for 21-feature schema)
         """
         profile = self.customers[customer_id]
         balance_features = {}
         
         # Current balance
-        balance_features['current_balance'] = profile.current_balance
+        balance_features['balance'] = profile.current_balance
         
-        # Rolling balance statistics
-        daily_balances = list(profile.daily_balances)
-        if len(daily_balances) > 0:
-            balance_features['min_balance_30d'] = min(daily_balances)
-            balance_features['max_balance_30d'] = max(daily_balances)
-            balance_features['avg_balance_30d'] = np.mean(daily_balances)
-            balance_features['balance_volatility_30d'] = np.std(daily_balances) if len(daily_balances) > 1 else 0.0
-        else:
-            balance_features['min_balance_30d'] = profile.current_balance
-            balance_features['max_balance_30d'] = profile.current_balance
-            balance_features['avg_balance_30d'] = profile.current_balance
-            balance_features['balance_volatility_30d'] = 0.0
-        
-        # Balance retention ratio (simplified)
+        # Balance retention ratio (simplified) - only balance feature in 21-feature schema
         recent_inflows = sum(
             tx['amount'] for tx in list(profile.recent_transactions)[-20:]
             if tx['type'] == 'deposit' and tx['timestamp'] > current_time - timedelta(days=1)
         )
         if recent_inflows > 0:
-            balance_features['balance_retention_ratio'] = profile.current_balance / recent_inflows
+            balance_features['balance_retention_ratio'] = min(profile.current_balance / recent_inflows, 1.0)
         else:
             balance_features['balance_retention_ratio'] = 0.0
-        
-        # Zero balance frequency
-        zero_count = sum(1 for b in daily_balances if b < 1.0)
-        balance_features['zero_balance_frequency'] = zero_count / (len(daily_balances) + 1e-6)
         
         return balance_features
     
@@ -999,54 +968,6 @@ class AMLGenerator:
         
         return entropy
     
-    def _calculate_pass_through_ratio(
-        self, 
-        customer_id: str, 
-        amount: float,
-        current_time: datetime
-    ) -> float:
-        """
-        Calculate pass-through ratio (critical mule account indicator).
-        
-        Pass-through ratio measures how much of an inflow is immediately
-        transferred out, indicating potential mule activity.
-        
-        Args:
-            customer_id: Customer identifier
-            amount: Current transaction amount
-            current_time: Current transaction timestamp
-            
-        Returns:
-            Pass-through ratio (0.0 to 1.0)
-        """
-        profile = self.customers[customer_id]
-        
-        # Look for outflows within 1 hour of recent inflows
-        recent_inflows = [
-            tx for tx in profile.recent_transactions
-            if tx['type'] == 'deposit' and tx['timestamp'] > current_time - timedelta(hours=1)
-        ]
-        
-        if not recent_inflows:
-            return 0.0
-        
-        # Calculate outflows within 1 hour of each inflow
-        total_inflow = sum(tx['amount'] for tx in recent_inflows)
-        total_outflow = 0.0
-        
-        for inflow in recent_inflows:
-            cutoff_time = inflow['timestamp'] + timedelta(hours=1)
-            outflows = [
-                tx for tx in profile.recent_transactions
-                if tx['type'] == 'withdrawal' 
-                and inflow['timestamp'] < tx['timestamp'] <= cutoff_time
-            ]
-            total_outflow += sum(tx['amount'] for tx in outflows)
-        
-        if total_inflow > 0:
-            return min(total_outflow / total_inflow, 1.0)
-        return 0.0
-    
     def _get_network_features(self, customer_id: str) -> Dict[str, float]:
         """
         Compute network-based features for AML detection.
@@ -1060,36 +981,9 @@ class AMLGenerator:
         profile = self.customers[customer_id]
         network_features = {}
         
-        # Degree centrality (number of unique counterparties)
-        network_features['degree_centrality'] = len(profile.counterparties)
-        
-        # In-degree (unique senders)
-        in_edges = self.transaction_graph.get(customer_id, {})
-        network_features['in_degree'] = len(in_edges)
-        
-        # Out-degree (unique recipients from customer's perspective)
-        out_edges = {cp: count for cp, count in self.transaction_graph.items() 
-                    if customer_id in self.transaction_graph[cp]}
-        network_features['out_degree'] = len(out_edges)
-        
-        # Funnel score (receives from many, sends to one - mule indicator)
-        if network_features['in_degree'] > 0 and network_features['out_degree'] > 0:
-            network_features['funnel_score'] = network_features['in_degree'] / network_features['out_degree']
-        else:
-            network_features['funnel_score'] = 0.0
-        
-        # Reciprocity ratio (bidirectional relationships)
-        reciprocal_count = 0
-        for cp in profile.counterparties:
-            if customer_id in self.transaction_graph.get(cp, {}):
-                reciprocal_count += 1
-        if len(profile.counterparties) > 0:
-            network_features['reciprocity_ratio'] = reciprocal_count / len(profile.counterparties)
-        else:
-            network_features['reciprocity_ratio'] = 0.0
-        
-        # New relationships in 7 days (simplified)
-        network_features['new_relationships_7d'] = len(profile.counterparties)  # Placeholder
+        # TVAE Hybrid v2.0 - Network features computed by CustomerFeatureEngineer
+        # Only basic counterparty tracking needed for core generation
+        network_features['distinct_counterparties_7d'] = len(profile.counterparties)
         
         return network_features
     
@@ -1099,7 +993,7 @@ class AMLGenerator:
         current_time: datetime
     ) -> Dict[str, float]:
         """
-        Compute temporal anomaly features.
+        Compute temporal anomaly features (TVAE Hybrid v2.0).
         
         Args:
             customer_id: Customer identifier
@@ -1111,11 +1005,8 @@ class AMLGenerator:
         profile = self.customers[customer_id]
         temporal_features = {}
         
-        # Hour of day
-        temporal_features['hour_of_day'] = current_time.hour
-        
-        # Day of week
-        temporal_features['day_of_week'] = current_time.weekday()
+        # TVAE Hybrid v2.0 - Temporal features computed by CustomerFeatureEngineer
+        # Only basic timestamp needed for core generation
         
         # Is anomalous hour (2-5 AM)
         temporal_features['is_anomalous_hour'] = 1.0 if current_time.hour in self.config.high_risk_hours else 0.0
@@ -1489,6 +1380,9 @@ class AMLGenerator:
                 else '',
                 'anomaly_flag': False,
                 'anomaly_type': None,
+                'tier': profile.wallet_tier.value,
+                'archetype': profile.archetype.value,
+                'direction': 'inflow' if tx_type == 'deposit' else 'outflow',
                 **features,
             }
 
@@ -1527,17 +1421,15 @@ class AMLGenerator:
         features.update(velocity_features)
         
         # Tier 1: Balance features
-        balance_features = self._get_balance_features(customer_id, current_time)
+        balance_features = self._compute_balance_features(customer_id, current_time)
         features.update(balance_features)
         
         # Tier 1: Amount pattern features
         amount_features = self._get_amount_pattern_features(customer_id, amount, current_time)
         features.update(amount_features)
         
-        # Tier 1: Pass-through ratio (CRITICAL for mule detection)
-        features['pass_through_ratio'] = self._calculate_pass_through_ratio(
-            customer_id, amount, current_time
-        )
+        # TVAE Hybrid v2.0 - pass_through_ratio removed (not in 21-feature schema)
+        # Mule detection now uses fan_in_fan_out_ratio and balance_retention_ratio
         
         # Tier 1: Network features
         network_features = self._get_network_features(customer_id)
@@ -1547,17 +1439,8 @@ class AMLGenerator:
         temporal_features = self._get_temporal_features(customer_id, current_time)
         features.update(temporal_features)
         
-        # Tier 2: Device/Location features
-        device_location_features = self._get_device_location_features(customer_id, current_time)
-        features.update(device_location_features)
-        
-        # Tier 2: Rolling window features
-        features['rolling_avg_tx_amount_30d'] = self._get_rolling_avg_amount(customer_id, 30)
-        features['rolling_net_flow_7d'] = self._get_rolling_net_flow(customer_id, 7)
-        
-        # Tier 3: Advanced features
-        features['community_id'] = self._get_community_id(customer_id)
-        features['behavioral_shift_score'] = self._get_behavioral_shift(customer_id)
+        # TVAE Hybrid v2.0 - Legacy tier 2/3 features removed
+        # These are now computed by CustomerFeatureEngineer
         
         return features
     
@@ -1579,10 +1462,6 @@ class AMLGenerator:
         outflows = sum(tx['amount'] for tx in recent_txs if tx['type'] in ['withdrawal', 'transfer'])
         return inflows - outflows
     
-    def _get_community_id(self, customer_id: str) -> int:
-        """Get community ID for customer (simplified)."""
-        # Placeholder for community detection algorithm
-        return hash(customer_id) % 10
     
     def _get_behavioral_shift(self, customer_id: str) -> float:
         """Calculate behavioral shift score from baseline."""
@@ -1734,18 +1613,13 @@ class AMLGenerator:
             "sim_match_status", "prev_fraud_flag_count_90d"
         }
         
-        # Also remove aggregate/rolling features (these should be computed in gold layer)
+        # TVAE Hybrid v2.0 - Remove legacy aggregate/rolling features
+        # These are now computed by CustomerFeatureEngineer
         aggregate_cols = {
-            "tx_count_1h", "tx_count_24h", "amount_sum_24h", "amount_vs_profile_avg",
-            "time_since_last_tx", "current_balance", "min_balance_30d", "max_balance_30d",
-            "avg_balance_30d", "balance_volatility_30d", "balance_retention_ratio",
-            "zero_balance_frequency", "amount_roundness", "amount_just_below_threshold",
-            "similar_amount_count_24h", "identical_amount_count_24h", "structuring_amount_entropy",
-            "pass_through_ratio", "degree_centrality", "in_degree", "out_degree",
-            "funnel_score", "reciprocity_ratio", "burst_ratio", "velocity_change_pct",
-            "balance_depletion_rate", "device_changes_7d", "location_entropy",
-            "rolling_avg_tx_amount_30d", "rolling_net_flow_7d", "new_relationships_7d",
-            "community_id", "behavioral_shift_score"
+            "tx_count_7d", "volume_7d", "night_tx_ratio", "rapid_tx_ratio", 
+            "volume_7d_vs_30d_ratio", "distinct_counterparties_7d", 
+            "fan_in_fan_out_ratio", "close_to_limit_ratio", 
+            "balance_retention_ratio", "amount_roundness"
         }
         
         # Keep only core transaction columns

@@ -37,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train AML detection models on the Gold feature store.")
     parser.add_argument(
         "--data-dir",
-        default="data/gold/features/vv1.0",
+        default="data/gold/features/v1.0",
         help="Path to Gold feature store directory (default: data/gold/features/v1.0)",
     )
     parser.add_argument(

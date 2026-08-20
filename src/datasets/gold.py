@@ -94,114 +94,33 @@ def _join_rolling_to_tx(
 # ---------------------------------------------------------------------------
 
 def _compute_velocity_derived(df: pl.DataFrame) -> pl.DataFrame:
-    """Burst ratio and velocity change from the rolling-window columns."""
-    return df.with_columns([
-        # burst_ratio = recent density vs hourly density
-        (pl.col("tx_count_1min") / (pl.col("tx_count_1h") + 1))
-        .alias("burst_ratio"),
-    ])
+    """Velocity derived features for 21-feature schema (no-op for now)."""
+    # TVAE Hybrid v2.0 - velocity features computed by CustomerFeatureEngineer
+    return df
 
 
 def _compute_balance_features(df: pl.DataFrame) -> pl.DataFrame:
-    """Balance-derived features over the 30-day rolling window."""
-    return df.with_columns([
-        # zero_balance_frequency — what fraction of a customer's recent
-        # transactions left a balance near zero
-        (pl.col("amount_sum_30d") / (pl.col("tx_count_30d") + 1).cast(pl.Float64))
-        .alias("mean_tx_amount_30d"),
-        # We approximate zero_balance_frequency by looking at the share of
-        # windows where post_tx_balance was < 5% of the customer's typical balance.
-        # A proper implementation would require per-window balance computation.
-        (pl.col("post_tx_balance") < 0.05 * pl.col("post_tx_balance").max().over("customer_id"))
-        .cast(pl.Float32)
-        .alias("zero_balance_frequency"),
-        # balance_retention_ratio — how much of deposited amount stays in account
-        (pl.col("post_tx_balance") / (pl.col("amount_sum_7d") + 1))
-        .clip(0, 1)
-        .alias("balance_retention_ratio"),
-        # balance_depletion_rate — how quickly balance drops relative to outflows
-        (pl.col("amount_sum_1h") / (pl.col("post_tx_balance") + 1))
-        .clip(0, 10)
-        .alias("balance_depletion_rate"),
-    ])
+    """Balance-derived features for 21-feature schema (no-op for now)."""
+    # TVAE Hybrid v2.0 - balance features computed by CustomerFeatureEngineer
+    return df
 
 
 def _compute_amount_patterns(df: pl.DataFrame) -> pl.DataFrame:
-    """Amount roundness, profiling, and structuring detection.
-
-    Split into multiple ``with_columns`` calls to avoid a Polars 0.20.x
-    query-plan conflict where ``.sum().over()`` inside a combined block
-    causes ``InvalidOperationError: window expression not allowed in aggregation``
-    when other plain ``.over()`` expressions reference the same frame.
-    """
-    df = df.with_columns([
-        # amount_roundness — how "round" the amount is (more round = more suspicious)
-        (1 / (pl.col("amount").log10().floor() + 1))
-        .alias("amount_roundness"),
-        # amount_vs_profile_avg — deviation from the customer's historic mean amount
-        ((pl.col("amount") - pl.col("_bin_amount_mean").over("customer_id"))
-         / (pl.col("_bin_amount_mean").over("customer_id") + 1))
-        .alias("amount_vs_profile_avg"),
-        # amount_just_below_threshold — within 10 % of 1 000 000 (common ceiling)
-        ((pl.col("amount") > 900_000) & (pl.col("amount") < 1_000_000))
-        .cast(pl.Int32)
-        .alias("amount_just_below_threshold"),
-    ])
-    # structuring proxy — rolling count of recent transactions by the same
-    # customer with amounts within 5% of this one
-    return df.with_columns([
-        pl.col("amount")
-        .is_between(
-            pl.col("amount") * 0.95,
-            pl.col("amount") * 1.05,
-            closed="both",
-        )
-        .cast(pl.Int32)
-        .rolling_sum(window_size=24)
-        .over("customer_id")
-        .alias("similar_amount_count_24h"),
-    ])
+    """Amount pattern features for 21-feature schema (no-op for now)."""
+    # TVAE Hybrid v2.0 - amount features computed by CustomerFeatureEngineer
+    return df
 
 
 def _compute_temporal_features(df: pl.DataFrame) -> pl.DataFrame:
-    """Extract temporal features from the timestamp column.
-
-    Split into two ``with_columns`` calls so ``is_anomalous_hour`` and
-    ``is_weekend`` can reference ``hour_of_day`` / ``day_of_week`` that are
-    created in the same block (Polars 0.20 evaluates expressions
-    simultaneously, not sequentially).
-    """
-    df = df.with_columns([
-        pl.col("timestamp").dt.hour().alias("hour_of_day"),
-        pl.col("timestamp").dt.weekday().alias("day_of_week"),
-        pl.col("timestamp").dt.day().alias("day_of_month"),
-        (pl.col("timestamp").diff().over("customer_id").dt.total_milliseconds() / 1000)
-        .alias("time_since_last_tx"),
-    ])
-    return df.with_columns([
-        ((pl.col("hour_of_day") < 6) | (pl.col("hour_of_day") > 22))
-        .cast(pl.Int32).alias("is_anomalous_hour"),
-        ((pl.col("day_of_week") >= 6)).cast(pl.Int32).alias("is_weekend"),
-    ])
+    """Temporal features for 21-feature schema (no-op for now)."""
+    # TVAE Hybrid v2.0 - temporal features computed by CustomerFeatureEngineer
+    return df
 
 
 def _compute_gold_features(df: pl.DataFrame) -> pl.DataFrame:
-    """Features that were historically produced only by the Gold layer."""
-    return df.with_columns([
-        pl.col("amount").log10().alias("log_amount"),
-        # is_round_number_100k — amount is a multiple of 100k
-        (pl.col("amount") % 100_000 == 0).cast(pl.Int32).alias("is_round_number_100k"),
-        # transaction_velocity — alias for tx_count_1h
-        pl.col("tx_count_1h").alias("transaction_velocity"),
-        # customer lifetime value — total net flow
-        (pl.col("amount_sum_30d")).alias("clv"),
-        # high_risk_amount — amount above 500k
-        (pl.col("amount") > 500_000).cast(pl.Int32).alias("high_risk_amount"),
-        # z_score_deviation — deviation from customer mean
-        ((pl.col("amount") - pl.col("_bin_amount_mean").over("customer_id"))
-         / (pl.col("_bin_amount_mean").over("customer_id") + 1))
-        .alias("z_score_deviation"),
-    ])
+    """Gold layer features for 21-feature schema (no-op for now)."""
+    # TVAE Hybrid v2.0 - gold features computed by CustomerFeatureEngineer
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -235,25 +154,22 @@ def silver_to_transaction_features(
     """
     if pass_through_columns is None:
         pass_through_columns = [
-            # Network / graph
-            "degree_centrality", "in_degree", "out_degree",
-            "reciprocity_ratio", "new_relationships_7d",
-            "clustering_coefficient", "community_id",
-            "behavioral_shift_score",
-            # Device / location
-            "device_age_days", "sim_match_status",
-            "device_changes_7d", "location_entropy", "device_change_flag",
-            "sender_county", "receiver_county",
-            # Funnel / pass-through (already behavioural)
-            "funnel_score", "pass_through_ratio",
-            "session_intensity",
-            # Wallet / KYC
-            "wallet_tier", "kyc_level",
-            "prev_fraud_flag_count_90d",
+            # TVAE Hybrid v2.0 - 21-feature schema
+            # Core features (8)
+            "customer_id", "tier", "archetype", "transaction_type", 
+            "amount", "timestamp", "direction", "balance",
+            # Temporal features (5)
+            "tx_count_7d", "volume_7d", "night_tx_ratio", 
+            "rapid_tx_ratio", "volume_7d_vs_30d_ratio",
+            # Network features (3)
+            "is_international", "distinct_counterparties_7d", "fan_in_fan_out_ratio",
+            # Structuring features (3)
+            "close_to_limit_ratio", "balance_retention_ratio", "amount_roundness",
+            # Labels (2)
+            "is_launderer", "aml_scenario",
         ]
 
-    label_cols = ["anomaly_flag", "anomaly_type", "anomaly_case_id", "transaction_id",
-                   "customer_id", "counterparty_id", "timestamp", "partition_date"]
+    label_cols = ["customer_id", "is_launderer", "aml_scenario", "timestamp"]
 
     logger.info(
         "Building transaction-level features from %s rows …",
@@ -298,34 +214,15 @@ def silver_to_transaction_features(
     result = _compute_gold_features(result)
 
     # ---- Step 3: Select final column set ----------------------------------
-    keep_cols = list(
-        set(pass_through_columns)
-        | set(label_cols)
-        | {
-            # Velocity
-            c for c in result.columns if c.startswith("tx_count_")
-        }
-        | {c for c in result.columns if c.startswith("amount_sum_")}
-        | {
-            "burst_ratio",
-            "mean_tx_amount_30d",
-            "zero_balance_frequency",
-            "balance_retention_ratio",
-            "balance_depletion_rate",
-            "amount_roundness",
-            "amount_vs_profile_avg",
-            "amount_just_below_threshold",
-            "similar_amount_count_24h",
-            "hour_of_day", "day_of_week", "day_of_month",
-            "is_anomalous_hour", "is_weekend",
-            "time_since_last_tx",
-            "log_amount", "is_stk_push", "is_b2c",
-            "is_round_number_100k",
-            "transaction_velocity",
-            "clv", "high_risk_amount", "z_score_deviation",
-            "post_tx_balance", "current_balance",
-        }
-    )
+    core_cols = [
+        "customer_id", "tier", "archetype", "transaction_type",
+        "amount", "timestamp", "direction", "balance",
+        "tx_count_7d", "volume_7d", "night_tx_ratio", "rapid_tx_ratio",
+        "volume_7d_vs_30d_ratio", "is_international", "distinct_counterparties_7d",
+        "fan_in_fan_out_ratio", "close_to_limit_ratio", "balance_retention_ratio",
+        "amount_roundness", "is_launderer", "aml_scenario",
+    ]
+    keep_cols = core_cols | label_cols
 
     result = result.select([c for c in keep_cols if c in result.columns])
 
